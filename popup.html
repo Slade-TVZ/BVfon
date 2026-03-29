@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="hr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Helper</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f7fb;
+        --panel: #ffffff;
+        --text: #17324d;
+        --muted: #5f7389;
+        --border: #d8e2ee;
+        --primary: #155eef;
+        --danger: #c62828;
+        --warn: #d97706;
+      }
+
+      body {
+        margin: 0;
+        width: 420px;
+        background: linear-gradient(180deg, #eef4fb 0%, #f8fbff 100%);
+        font-family: "Segoe UI", Arial, sans-serif;
+        color: var(--text);
+      }
+
+      .wrap {
+        padding: 14px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        box-shadow: 0 14px 36px rgba(20, 44, 74, 0.08);
+      }
+
+      h1, h2 {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+      }
+
+      h2 {
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+
+      p {
+        margin: 6px 0 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .section + .section {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      button, select {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+
+      button {
+        cursor: pointer;
+        font-weight: 600;
+        background: #e9f1fb;
+        color: var(--text);
+      }
+
+      button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+
+      button.danger {
+        background: #fdeceb;
+        border-color: #f7c9c4;
+        color: var(--danger);
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .toolbar > * {
+        flex: 1;
+      }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #f8fbff;
+      }
+
+      .toggle span {
+        display: block;
+      }
+
+      .toggle small {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      #status {
+        min-height: 18px;
+        margin-top: 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      #preview {
+        margin-top: 10px;
+        max-height: 160px;
+        overflow: auto;
+        background: #0f2236;
+        color: #dff0ff;
+        border-radius: 10px;
+        padding: 10px;
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      #logsList {
+        margin-top: 10px;
+        max-height: 280px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fbfdff;
+      }
+
+      .log-item {
+        padding: 10px 12px;
+        border-bottom: 1px solid #eaf0f6;
+      }
+
+      .log-item:last-child {
+        border-bottom: 0;
+      }
+
+      .log-meta {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+        font-size: 11px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 7px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+
+      .badge.info {
+        background: #e8f0ff;
+        color: #155eef;
+      }
+
+      .badge.warn {
+        background: #fff3e6;
+        color: var(--warn);
+      }
+
+      .badge.error {
+        background: #fdeceb;
+        color: var(--danger);
+      }
+
+      .log-event {
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .log-details {
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .empty {
+        padding: 16px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="section">
+          <h1>Invoice Helper</h1>
+          <p>Extract, fill and inspect logs locally inside the extension.</p>
+
+          <div class="grid">
+            <button id="extractBtn" class="primary">Extract data</button>
+            <button id="fillBtn" class="primary">Fill destination</button>
+            <button id="previewBtn">Preview data</button>
+            <button id="clearDataBtn" class="danger">Clear workflow data</button>
+          </div>
+
+          <div id="status"></div>
+          <pre id="preview" hidden></pre>
+        </div>
+
+        <div class="section">
+          <h2>Logs</h2>
+
+          <div class="toggle">
+            <div>
+              <span>Debug mode</span>
+              <small>`off` = warn/error, `on` = info/warn/error</small>
+            </div>
+            <input id="debugModeToggle" type="checkbox">
+          </div>
+
+          <div class="toolbar" style="margin-top: 10px;">
+            <select id="levelFilter">
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+            </select>
+            <button id="refreshLogsBtn">Refresh logs</button>
+          </div>
+
+          <div class="grid" style="margin-top: 8px;">
+            <button id="clearLogsBtn" class="danger">Clear logs</button>
+            <button id="exportLogsBtn">Export logs as JSON</button>
+          </div>
+
+          <div id="logsList"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="logger.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

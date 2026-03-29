@@ -1,0 +1,149 @@
+importScripts("logger.js");
+
+const CLEANUP_ALARM_NAME = "log-cleanup";
+const CLEANUP_PERIOD_MINUTES = 12 * 60;
+const STORAGE_KEYS = {
+  extractedRows: "extractedRows",
+  extractionMeta: "extractionMeta",
+  pendingExtraction: "pendingExtraction",
+  pendingDestinationInvoiceNumber: "pendingDestinationInvoiceNumber"
+};
+
+initializeServiceWorker();
+
+chrome.runtime.onInstalled.addListener(() => {
+  initializeServiceWorker();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  initializeServiceWorker();
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== CLEANUP_ALARM_NAME) {
+    return;
+  }
+
+  await InvoiceLogger.pruneOldLogs();
+  await InvoiceLogger.logEvent("info", "service-worker", "alarm-prune-complete", {
+    alarmName: alarm.name
+  });
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "POPUP_ACTION") {
+    return false;
+  }
+
+  handlePopupAction(message)
+    .then((result) => sendResponse({ ok: true, ...result }))
+    .catch(async (error) => {
+      await InvoiceLogger.logEvent("error", "service-worker", "popup-action-failed", {
+        action: message?.action || "",
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
+  return true;
+});
+
+async function initializeServiceWorker() {
+  await InvoiceLogger.pruneOldLogs();
+
+  await chrome.alarms.create(CLEANUP_ALARM_NAME, {
+    periodInMinutes: CLEANUP_PERIOD_MINUTES
+  });
+
+  await InvoiceLogger.logEvent("info", "service-worker", "startup-complete", {
+    cleanupEveryMinutes: CLEANUP_PERIOD_MINUTES
+  });
+}
+
+async function handlePopupAction(message) {
+  const action = message?.action || "";
+  await InvoiceLogger.logEvent("info", "service-worker", "popup-action-received", { action });
+
+  switch (action) {
+    case "extract":
+      return sendActionToActiveTab("EXTRACT_DATA", ["logger.js", "source-content.js"]);
+    case "fill":
+      return sendActionToActiveTab("FILL_DESTINATION_PAGE", ["logger.js", "destination-content.js"]);
+    case "preview":
+      return previewStoredData();
+    case "getLogs":
+      return { logs: await InvoiceLogger.getLogs(100), message: "Loaded logs." };
+    case "clearLogs":
+      await InvoiceLogger.clearLogs();
+      return { message: "Logs cleared." };
+    case "exportLogs":
+      return { content: await InvoiceLogger.exportLogs(), message: "Logs exported." };
+    case "setDebugMode":
+      await InvoiceLogger.setDebugMode(Boolean(message.enabled));
+      await InvoiceLogger.logEvent("warn", "service-worker", "debug-mode-changed", {
+        enabled: Boolean(message.enabled)
+      });
+      return { enabled: Boolean(message.enabled), message: "Debug mode updated." };
+    case "getDebugMode":
+      return { enabled: await InvoiceLogger.getDebugMode(), message: "Debug mode loaded." };
+    case "clearData":
+      await chrome.storage.local.remove([
+        STORAGE_KEYS.extractedRows,
+        STORAGE_KEYS.extractionMeta,
+        STORAGE_KEYS.pendingExtraction,
+        STORAGE_KEYS.pendingDestinationInvoiceNumber
+      ]);
+      await InvoiceLogger.logEvent("warn", "service-worker", "workflow-data-cleared", "");
+      return { message: "Stored workflow data cleared." };
+    default:
+      throw new Error(`Unsupported action: ${action}`);
+  }
+}
+
+async function sendActionToActiveTab(type, filesToInject) {
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true
+  });
+
+  if (!tab?.id) {
+    throw new Error("No active tab found.");
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: filesToInject
+  });
+
+  await InvoiceLogger.logEvent("info", "service-worker", "scripts-injected", {
+    type,
+    filesToInject
+  });
+
+  const response = await chrome.tabs.sendMessage(tab.id, { type });
+  return response || { message: "Action sent." };
+}
+
+async function previewStoredData() {
+  const storage = await chrome.storage.local.get([
+    STORAGE_KEYS.extractedRows,
+    STORAGE_KEYS.extractionMeta
+  ]);
+
+  const rows = storage[STORAGE_KEYS.extractedRows] || [];
+  const meta = storage[STORAGE_KEYS.extractionMeta] || null;
+
+  await InvoiceLogger.logEvent("info", "service-worker", "preview-requested", {
+    rowCount: rows.length
+  });
+
+  return {
+    rows,
+    meta,
+    message: rows.length ? `Loaded ${rows.length} stored rows.` : "No stored rows found."
+  };
+}
