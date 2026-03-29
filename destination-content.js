@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v4";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v5";
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -36,10 +36,22 @@
       paymentModel: "#formaPodaciPlacanje_modelPaymentID",
       paymentReferenceNumber: "#formaPodaciPlacanje_pozivNaBrojPaymentID"
     },
+    editableDocumentLabels: {
+      dueDate: ["Datum dospijeca placanja"],
+      issueDate: ["Datum izdavanja"],
+      issueTime: ["Vrijeme izdavanja"],
+      invoicePeriod: ["Obracunsko razdoblje"],
+      paymentNote: ["Opis placanja"],
+      paymentModel: ["Model i poziv na broj"],
+      paymentReferenceNumber: ["Model i poziv na broj"]
+    },
     lineItems: {
       rows: "#specifikacijaStavke .ant-table-tbody tr.ant-table-row",
       nameCell: "td.naziv_artikla",
       editButton: 'button .anticon-edit, button[aria-label="edit"]',
+      saveButton: 'button .anticon-save, button[aria-label="save"]',
+      inlineEditableSelector:
+        'textarea, input[type="text"], input[inputmode="numeric"], .ant-select, button .anticon-save',
       modalRoot: ".ant-modal-root .ant-modal, .ant-drawer .ant-drawer-content"
     }
   };
@@ -136,6 +148,7 @@
       !editableInvoiceField.closest("fieldset[disabled]");
 
     if (isEditableDocument) {
+      await waitForEditableDocumentReady();
       const pendingInvoiceNumber = await applyPendingInvoiceNumber();
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
@@ -208,6 +221,7 @@
       return;
     }
 
+    await waitForEditableDocumentReady();
     const repairedInvoiceNumber = await applyPendingInvoiceNumber();
     if (!repairedInvoiceNumber) {
       return;
@@ -277,12 +291,14 @@
     ]);
     const pendingInvoiceNumber = storage[STORAGE_KEYS.pendingDestinationInvoiceNumber];
     const lastAppliedInvoiceNumber = storage[STORAGE_KEYS.lastAppliedDestinationInvoiceNumber];
-    const targetField = document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber);
+    const targetField = await waitForEditableField(
+      DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber
+    );
     const currentInvoiceNumber = targetField?.value?.trim() || "";
 
     if (!targetField || targetField.disabled) {
       await InvoiceLogger.logEvent("warn", "destination-content", "invoice-number-field-missing", "");
-      InvoiceLogger.showStatusOverlay("Destination field missing", "warn");
+      InvoiceLogger.showStatusOverlay("Destination field missing: invoice-number", "warn");
       return pendingInvoiceNumber || null;
     }
 
@@ -363,37 +379,63 @@
 
   async function seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta) {
     const selectors = DESTINATION_CONFIG.editableDocumentSelectors;
+    const labels = DESTINATION_CONFIG.editableDocumentLabels;
     const updates = [];
     const now = new Date();
     const dueDate = new Date(now.getFullYear(), now.getMonth(), 17);
     const shortReference = buildShortReference(pendingInvoiceNumber);
     const invoicePeriod = parseFinancialPeriod(extractionMeta?.financialPeriod || "");
 
-    updates.push(await setField(selectors.issueDate, formatCroatianDate(now, true), "issue-date"));
-    updates.push(await setField(selectors.issueTime, formatTime(now), "issue-time"));
-    updates.push(await setField(selectors.dueDate, formatCroatianDate(dueDate, true), "due-date"));
-    updates.push(await setField(selectors.paymentModel, "HR", "payment-model"));
+    updates.push(
+      await setField(selectors.issueDate, formatCroatianDate(now, true), "issue-date", labels.issueDate)
+    );
+    updates.push(await setField(selectors.issueTime, formatTime(now), "issue-time", labels.issueTime));
+    updates.push(
+      await setField(
+        selectors.dueDate,
+        formatCroatianDate(dueDate, true),
+        "due-date",
+        labels.dueDate
+      )
+    );
+    updates.push(
+      await setField(selectors.paymentModel, "HR", "payment-model", labels.paymentModel)
+    );
 
     if (shortReference) {
-      updates.push(await setField(selectors.paymentNote, shortReference, "payment-note"));
       updates.push(
-        await setField(selectors.paymentReferenceNumber, shortReference, "payment-reference-number")
+        await setField(selectors.paymentNote, shortReference, "payment-note", labels.paymentNote)
+      );
+      updates.push(
+        await setField(
+          selectors.paymentReferenceNumber,
+          shortReference,
+          "payment-reference-number",
+          labels.paymentReferenceNumber
+        )
       );
     }
 
-    updates.push(await setInvoicePeriodRange(selectors.invoicePeriodInputs, invoicePeriod || now));
+    updates.push(
+      await setInvoicePeriodRange(
+        selectors.invoicePeriodInputs,
+        invoicePeriod || now,
+        labels.invoicePeriod
+      )
+    );
 
     return updates.filter(Boolean);
   }
 
-  async function setField(selector, value, eventName) {
-    const element = document.querySelector(selector);
+  async function setField(selector, value, eventName, labelCandidates = []) {
+    const element = await waitForEditableField(selector, labelCandidates);
     if (!element || element.disabled) {
       await InvoiceLogger.logEvent("warn", "destination-content", "destination-field-missing", {
         selector,
-        eventName
+        eventName,
+        labelCandidates
       });
-      InvoiceLogger.showStatusOverlay("Destination field missing", "warn");
+      InvoiceLogger.showStatusOverlay(`Destination field missing: ${eventName}`, "warn");
       return null;
     }
 
@@ -406,11 +448,12 @@
     return { selector, value };
   }
 
-  async function setInvoicePeriodRange(selector, referenceDate) {
-    const inputs = Array.from(document.querySelectorAll(selector));
+  async function setInvoicePeriodRange(selector, referenceDate, labelCandidates = []) {
+    const inputs = findInvoicePeriodInputs(selector, labelCandidates);
     if (inputs.length < 2) {
       await InvoiceLogger.logEvent("warn", "destination-content", "invoice-period-inputs-missing", {
-        selector
+        selector,
+        labelCandidates
       });
       return null;
     }
@@ -528,14 +571,13 @@
       return editContext.result;
     }
 
-    const { editorRoot, saveButton } = editContext;
-    const quantityUpdated = setLabeledFieldValue(editorRoot, ["Kolicina"], "0");
-    const unitPriceUpdated = setLabeledFieldValue(
-      editorRoot,
+    const quantityUpdated = setEditorFieldValue(editContext, ["Kolicina"], "0");
+    const unitPriceUpdated = setEditorFieldValue(
+      editContext,
       ["Jedinicna cijena artikla", "Neto cijena artikla"],
       "0"
     );
-    const netAmountUpdated = setLabeledFieldValue(editorRoot, ["Neto iznos stavke"], "0");
+    const netAmountUpdated = setEditorFieldValue(editContext, ["Neto iznos stavke"], "0");
 
     if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-zero-fields-missing", {
@@ -548,7 +590,7 @@
       };
     }
 
-    await saveLineItemEditor(saveButton);
+    await saveLineItemEditor(editContext);
 
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-zeroed", {
       destinationName,
@@ -590,20 +632,19 @@
       return editContext.result;
     }
 
-    const { editorRoot, saveButton } = editContext;
     const quantityUpdated = sourceQuantityRaw
-      ? setLabeledFieldValue(editorRoot, ["Kolicina"], normalizeNumericInput(sourceQuantityRaw))
+      ? setEditorFieldValue(editContext, ["Kolicina"], normalizeNumericInput(sourceQuantityRaw))
       : false;
     const unitPriceUpdated = sourceUnitPriceRaw
-      ? setLabeledFieldValue(
-          editorRoot,
+      ? setEditorFieldValue(
+          editContext,
           ["Jedinicna cijena artikla", "Neto cijena artikla"],
           normalizeNumericInput(sourceUnitPriceRaw)
         )
       : false;
     const netAmountUpdated = sourceNetAmountRaw
-      ? setLabeledFieldValue(
-          editorRoot,
+      ? setEditorFieldValue(
+          editContext,
           ["Neto iznos stavke"],
           normalizeNumericInput(sourceNetAmountRaw)
         )
@@ -625,7 +666,7 @@
       };
     }
 
-    await saveLineItemEditor(saveButton);
+    await saveLineItemEditor(editContext);
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-updated", {
       destinationName,
       quantity: sourceQuantity,
@@ -653,7 +694,18 @@
     while (Date.now() - started < timeoutMs) {
       const editorRoot = document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot);
       if (editorRoot) {
-        return editorRoot;
+        return {
+          mode: "modal",
+          editorRoot
+        };
+      }
+
+      const inlineRow = findActiveInlineEditorRow();
+      if (inlineRow) {
+        return {
+          mode: "inline",
+          editorRoot: inlineRow
+        };
       }
       await sleep(150);
     }
@@ -662,6 +714,30 @@
   }
 
   async function openLineItemEditor(row, destinationName) {
+    if (isInlineEditableRow(row)) {
+      const saveButton = findInlineSaveButton(row);
+      if (!saveButton) {
+        await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
+          destinationName,
+          mode: "inline"
+        });
+        return {
+          ok: false,
+          result: {
+            type: "save-button-missing",
+            destinationName
+          }
+        };
+      }
+
+      return {
+        ok: true,
+        mode: "inline",
+        editorRoot: row,
+        saveButton
+      };
+    }
+
     const editButton = findLineItemEditButton(row);
     if (!editButton) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-edit-missing", {
@@ -679,8 +755,8 @@
     editButton.click();
     await sleep(300);
 
-    const editorRoot = await waitForLineItemEditor();
-    if (!editorRoot) {
+    const editorState = await waitForLineItemEditor();
+    if (!editorState?.editorRoot) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-missing", {
         destinationName
       });
@@ -693,10 +769,14 @@
       };
     }
 
-    const saveButton = findActionButton(editorRoot, ["Spremi", "Save", "OK", "Potvrdi"]);
+    const saveButton =
+      editorState.mode === "inline"
+        ? findInlineSaveButton(editorState.editorRoot)
+        : findActionButton(editorState.editorRoot, ["Spremi", "Save", "OK", "Potvrdi"]);
     if (!saveButton) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
-        destinationName
+        destinationName,
+        mode: editorState.mode
       });
       return {
         ok: false,
@@ -709,29 +789,79 @@
 
     return {
       ok: true,
-      editorRoot,
+      mode: editorState.mode,
+      editorRoot: editorState.editorRoot,
       saveButton
     };
   }
 
-  async function saveLineItemEditor(saveButton) {
-    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
-    saveButton.click();
-    await waitForEditorToClose();
+  async function saveLineItemEditor(editContext) {
+    emphasizeElement(editContext.saveButton, "rgba(34, 197, 94, 0.24)");
+    editContext.saveButton.click();
+    await waitForEditorToClose(editContext);
     await sleep(250);
   }
 
-  async function waitForEditorToClose(timeoutMs = 4000) {
+  async function waitForEditorToClose(editContext, timeoutMs = 4000) {
     const started = Date.now();
 
     while (Date.now() - started < timeoutMs) {
-      if (!document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot)) {
+      if (editContext.mode === "inline") {
+        if (!isInlineEditableRow(editContext.editorRoot)) {
+          return true;
+        }
+      } else if (!document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot)) {
         return true;
       }
       await sleep(150);
     }
 
     return false;
+  }
+
+  function setEditorFieldValue(editContext, labelCandidates, value) {
+    if (editContext.mode === "inline") {
+      return setInlineLineItemFieldValue(editContext.editorRoot, labelCandidates, value);
+    }
+
+    return setLabeledFieldValue(editContext.editorRoot, labelCandidates, value);
+  }
+
+  function setInlineLineItemFieldValue(row, labelCandidates, value) {
+    const selector = getInlineFieldSelector(labelCandidates);
+    if (!selector) {
+      return false;
+    }
+
+    const field = row.querySelector(selector);
+    if (!field || field.disabled) {
+      return false;
+    }
+
+    writeValue(field, value);
+    return true;
+  }
+
+  function getInlineFieldSelector(labelCandidates) {
+    const normalized = labelCandidates.map((label) => normalizeText(label));
+
+    if (normalized.some((label) => label.includes("KOLICINA"))) {
+      return 'input#quantity, input[name="quantity"]';
+    }
+
+    if (
+      normalized.some(
+        (label) => label.includes("JEDINICNA CIJENA ARTIKLA") || label.includes("NETO CIJENA ARTIKLA")
+      )
+    ) {
+      return 'input#price_allowanceCharge_baseAmount, input[name="price_allowanceCharge_baseAmount"]';
+    }
+
+    if (normalized.some((label) => label.includes("NETO IZNOS STAVKE"))) {
+      return 'input#lineExtensionAmount:not([disabled]), input[name="lineExtensionAmount"]:not([disabled])';
+    }
+
+    return "";
   }
 
   function setLabeledFieldValue(root, labelCandidates, value) {
@@ -762,6 +892,27 @@
     }
 
     return false;
+  }
+
+  function isInlineEditableRow(row) {
+    if (!row) {
+      return false;
+    }
+
+    return Boolean(row.querySelector(DESTINATION_CONFIG.lineItems.inlineEditableSelector));
+  }
+
+  function findActiveInlineEditorRow() {
+    return (
+      Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).find((row) =>
+        isInlineEditableRow(row)
+      ) || null
+    );
+  }
+
+  function findInlineSaveButton(row) {
+    const saveIcon = row?.querySelector(DESTINATION_CONFIG.lineItems.saveButton);
+    return saveIcon?.closest("button") || null;
   }
 
   function findActionButton(root, labelCandidates) {
@@ -990,6 +1141,83 @@
       element.style.outline = previousOutline;
       element.style.backgroundColor = previousBackground;
     }, 2000);
+  }
+
+  function findEditableField(selector, labelCandidates = []) {
+    const directHit = selector ? document.querySelector(selector) : null;
+    if (directHit) {
+      return directHit;
+    }
+
+    return findInputByLabels(labelCandidates);
+  }
+
+  async function waitForEditableField(selector, labelCandidates = [], timeoutMs = 4000) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      const element = findEditableField(selector, labelCandidates);
+      if (element) {
+        return element;
+      }
+      await sleep(150);
+    }
+
+    return findEditableField(selector, labelCandidates);
+  }
+
+  async function waitForEditableDocumentReady(timeoutMs = 6000) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      const invoiceField = document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber);
+      const paymentNoteField = findEditableField(
+        DESTINATION_CONFIG.editableDocumentSelectors.paymentNote,
+        DESTINATION_CONFIG.editableDocumentLabels.paymentNote
+      );
+      const issueDateField = findEditableField(
+        DESTINATION_CONFIG.editableDocumentSelectors.issueDate,
+        DESTINATION_CONFIG.editableDocumentLabels.issueDate
+      );
+
+      if (invoiceField && paymentNoteField && issueDateField) {
+        return true;
+      }
+
+      await sleep(200);
+    }
+
+    return false;
+  }
+
+  function findInvoicePeriodInputs(selector, labelCandidates = []) {
+    const directHits = selector ? Array.from(document.querySelectorAll(selector)) : [];
+    if (directHits.length >= 2) {
+      return directHits;
+    }
+
+    const container = findFormItemByLabels(labelCandidates);
+    return container ? Array.from(container.querySelectorAll("input")) : [];
+  }
+
+  function findInputByLabels(labelCandidates = []) {
+    const container = findFormItemByLabels(labelCandidates);
+    return container?.querySelector("input, textarea") || null;
+  }
+
+  function findFormItemByLabels(labelCandidates = []) {
+    const normalizedCandidates = labelCandidates.map((candidate) => normalizeText(candidate));
+    if (!normalizedCandidates.length) {
+      return null;
+    }
+
+    const labels = Array.from(document.querySelectorAll("label"));
+    const match = labels.find((label) => {
+      const text = normalizeText(label.textContent || "");
+      return normalizedCandidates.some((candidate) => text.includes(candidate));
+    });
+
+    return match?.closest(".ant-form-item") || null;
   }
 
   function sleep(ms) {
