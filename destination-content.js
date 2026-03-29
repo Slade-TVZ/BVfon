@@ -1,18 +1,23 @@
 (function () {
-  if (globalThis.__invoiceHelperDestinationInitialized) {
+  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v3";
+
+  if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
   }
-  globalThis.__invoiceHelperDestinationInitialized = true;
+  globalThis.__invoiceHelperDestinationInitialized = DESTINATION_SCRIPT_VERSION;
 
   const STORAGE_KEYS = {
     extractedRows: "extractedRows",
     extractionMeta: "extractionMeta",
-    pendingDestinationInvoiceNumber: "pendingDestinationInvoiceNumber"
+    pendingDestinationInvoiceNumber: "pendingDestinationInvoiceNumber",
+    lastAppliedDestinationInvoiceNumber: "lastAppliedDestinationInvoiceNumber"
   };
 
   const DESTINATION_CONFIG = {
     searchPagePath: "/eRacunB2B/dokument/pretraga",
     resultsRows: ".ant-table-tbody tr.ant-table-row.row-link",
+    resultsIdCellIndex: 0,
+    resultsInvoiceNumberCellIndex: 1,
     resultsCustomerCellIndex: 2,
     nextPageButton: ".ant-pagination-next button",
     createFromDocumentSelectors: [
@@ -33,7 +38,9 @@
     },
     lineItems: {
       rows: "#specifikacijaStavke .ant-table-tbody tr.ant-table-row",
-      nameCell: "td.naziv_artikla"
+      nameCell: "td.naziv_artikla",
+      editButton: 'button .anticon-edit, button[aria-label="edit"]',
+      modalRoot: ".ant-modal-root .ant-modal, .ant-drawer .ant-drawer-content"
     }
   };
 
@@ -57,6 +64,14 @@
       });
 
     return true;
+  });
+
+  queueMicrotask(() => {
+    attemptAutoRepairOnEditableDocument().catch(async (error) => {
+      await InvoiceLogger.logEvent("warn", "destination-content", "auto-repair-failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
   });
 
   async function fillDestinationFlow() {
@@ -100,9 +115,11 @@
       throw new Error(`Document row not found for "${targetName}".`);
     }
 
+    emphasizeElement(matchingRow, "rgba(21, 94, 239, 0.22)");
     matchingRow.click();
     await InvoiceLogger.logEvent("info", "destination-content", "matching-document-opened", {
-      targetName
+      targetName,
+      rowSummary: summarizeSearchRow(matchingRow)
     });
     InvoiceLogger.showStatusOverlay("Matching document opened", "success");
 
@@ -110,9 +127,37 @@
   }
 
   async function fillCurrentForm(extractedRows, extractionMeta) {
-    const createButton = DESTINATION_CONFIG.createFromDocumentSelectors
-      .map((selector) => document.querySelector(selector))
-      .find(Boolean);
+    const editableInvoiceField = document.querySelector(
+      DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber
+    );
+    const isEditableDocument =
+      editableInvoiceField &&
+      !editableInvoiceField.disabled &&
+      !editableInvoiceField.closest("fieldset[disabled]");
+
+    if (isEditableDocument) {
+      const pendingInvoiceNumber = await applyPendingInvoiceNumber();
+      const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber);
+      const lineItemResults = await applyLineItemRules(extractedRows);
+      const lineItemMatch = await findMatchingLineItem(extractedRows);
+
+      await InvoiceLogger.logEvent("info", "destination-content", "fill-completed", {
+        fieldResults,
+        lineItemResults,
+        lineItemMatch
+      });
+      InvoiceLogger.showStatusOverlay("Fill completed", "success");
+
+      return {
+        message: "Destination form updated.",
+        extractionMeta,
+        fieldResults,
+        lineItemResults,
+        lineItemMatch
+      };
+    }
+
+    const createButton = findCreateFromDocumentButton();
 
     if (createButton) {
       const currentInvoiceField = document.querySelector(DESTINATION_CONFIG.detailInvoiceNumberField);
@@ -140,22 +185,50 @@
       };
     }
 
-    const pendingInvoiceNumber = await applyPendingInvoiceNumber();
-    const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber);
-    const lineItemMatch = await findMatchingLineItem(extractedRows);
-
-    await InvoiceLogger.logEvent("info", "destination-content", "fill-completed", {
-      fieldResults,
-      lineItemMatch
+    await InvoiceLogger.logEvent("warn", "destination-content", "unsupported-page-state", {
+      path: location.pathname
     });
-    InvoiceLogger.showStatusOverlay("Fill completed", "success");
+    throw new Error("Current destination page state is not supported yet.");
+  }
 
-    return {
-      message: "Destination form updated.",
-      extractionMeta,
-      fieldResults,
-      lineItemMatch
-    };
+  async function attemptAutoRepairOnEditableDocument() {
+    if (location.pathname === DESTINATION_CONFIG.searchPagePath) {
+      return;
+    }
+
+    const editableInvoiceField = document.querySelector(
+      DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber
+    );
+    const isEditableDocument =
+      editableInvoiceField &&
+      !editableInvoiceField.disabled &&
+      !editableInvoiceField.closest("fieldset[disabled]");
+
+    if (!isEditableDocument) {
+      return;
+    }
+
+    const repairedInvoiceNumber = await applyPendingInvoiceNumber();
+    if (!repairedInvoiceNumber) {
+      return;
+    }
+
+    const shortReference = buildShortReference(repairedInvoiceNumber);
+    if (shortReference) {
+      writeValue(
+        document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.paymentNote),
+        shortReference
+      );
+      writeValue(
+        document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.paymentReferenceNumber),
+        shortReference
+      );
+    }
+
+    await InvoiceLogger.logEvent("info", "destination-content", "auto-repair-applied", {
+      repairedInvoiceNumber,
+      shortReference
+    });
   }
 
   async function findMatchingRowAcrossPages(targetName) {
@@ -164,16 +237,22 @@
     while (pageGuard < 10) {
       await waitForRows();
 
-      const matchingRow = Array.from(document.querySelectorAll(DESTINATION_CONFIG.resultsRows)).find(
-        (row) => {
+      const matchingRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.resultsRows))
+        .filter((row) => {
           const cells = row.querySelectorAll("td");
           const customerCell = cells[DESTINATION_CONFIG.resultsCustomerCellIndex];
           const customerName = normalizeText(customerCell?.textContent || "");
           return customerName.includes(targetName);
-        }
-      );
+        })
+        .sort((left, right) => getRowNumericId(right) - getRowNumericId(left));
+
+      const matchingRow = matchingRows[0] || null;
 
       if (matchingRow) {
+        await InvoiceLogger.logEvent("info", "destination-content", "matching-document-found", {
+          targetName,
+          rowSummary: summarizeSearchRow(matchingRow)
+        });
         return matchingRow;
       }
 
@@ -192,27 +271,94 @@
   }
 
   async function applyPendingInvoiceNumber() {
-    const storage = await safeGet([STORAGE_KEYS.pendingDestinationInvoiceNumber]);
+    const storage = await safeGet([
+      STORAGE_KEYS.pendingDestinationInvoiceNumber,
+      STORAGE_KEYS.lastAppliedDestinationInvoiceNumber
+    ]);
     const pendingInvoiceNumber = storage[STORAGE_KEYS.pendingDestinationInvoiceNumber];
-
-    if (!pendingInvoiceNumber) {
-      return null;
-    }
-
+    const lastAppliedInvoiceNumber = storage[STORAGE_KEYS.lastAppliedDestinationInvoiceNumber];
     const targetField = document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.invoiceNumber);
+    const currentInvoiceNumber = targetField?.value?.trim() || "";
+
     if (!targetField || targetField.disabled) {
       await InvoiceLogger.logEvent("warn", "destination-content", "invoice-number-field-missing", "");
       InvoiceLogger.showStatusOverlay("Destination field missing", "warn");
-      return pendingInvoiceNumber;
+      return pendingInvoiceNumber || null;
     }
 
-    writeValue(targetField, pendingInvoiceNumber);
+    if (currentInvoiceNumber && currentInvoiceNumber === lastAppliedInvoiceNumber) {
+      await InvoiceLogger.logEvent("info", "destination-content", "invoice-number-already-applied", {
+        value: currentInvoiceNumber
+      });
+      await safeRemove([STORAGE_KEYS.pendingDestinationInvoiceNumber]);
+      return currentInvoiceNumber;
+    }
+
+    const inferredInvoiceNumber =
+      pendingInvoiceNumber || inferNextInvoiceNumberFromCurrentState(currentInvoiceNumber);
+
+    if (!inferredInvoiceNumber) {
+      return null;
+    }
+
+    writeValue(targetField, inferredInvoiceNumber);
+    await safeSet({
+      [STORAGE_KEYS.lastAppliedDestinationInvoiceNumber]: inferredInvoiceNumber
+    });
     await safeRemove([STORAGE_KEYS.pendingDestinationInvoiceNumber]);
     await InvoiceLogger.logEvent("info", "destination-content", "invoice-number-updated", {
-      value: pendingInvoiceNumber
+      value: inferredInvoiceNumber,
+      previousValue: currentInvoiceNumber
     });
 
-    return pendingInvoiceNumber;
+    return inferredInvoiceNumber;
+  }
+
+  function inferNextInvoiceNumberFromCurrentState(currentInvoiceNumber) {
+    if (!currentInvoiceNumber) {
+      return null;
+    }
+
+    const paymentNote = document.querySelector(
+      DESTINATION_CONFIG.editableDocumentSelectors.paymentNote
+    )?.value?.trim();
+    const paymentReference = document.querySelector(
+      DESTINATION_CONFIG.editableDocumentSelectors.paymentReferenceNumber
+    )?.value?.trim();
+    const currentShortReference = buildShortReference(currentInvoiceNumber);
+    const incrementedInvoiceNumber = incrementInvoiceNumber(currentInvoiceNumber, 22);
+    const incrementedShortReference = buildShortReference(incrementedInvoiceNumber);
+
+    if (
+      incrementedShortReference &&
+      (paymentNote === incrementedShortReference || paymentReference === incrementedShortReference)
+    ) {
+      return null;
+    }
+
+    if (
+      !paymentNote &&
+      !paymentReference
+    ) {
+      return incrementedInvoiceNumber;
+    }
+
+    if (paymentNote === currentShortReference || paymentReference === currentShortReference) {
+      return incrementedInvoiceNumber;
+    }
+
+    return null;
+  }
+
+  function findCreateFromDocumentButton() {
+    const candidates = DESTINATION_CONFIG.createFromDocumentSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector))
+    );
+
+    return candidates.find((button) => {
+      const text = normalizeText(button?.textContent || "");
+      return text.includes("IZRADI NOVI DOKUMENT IZ PRIKAZANOG");
+    }) || null;
   }
 
   async function seedKnownDocumentFields(pendingInvoiceNumber) {
@@ -314,6 +460,190 @@
     };
   }
 
+  async function applyLineItemRules(extractedRows) {
+    const sourceRowsByName = new Map(
+      extractedRows
+        .map((row) => {
+          const name = normalizeText(getSourceLineItemName(row));
+          return name ? [name, row] : null;
+        })
+        .filter(Boolean)
+    );
+    const destinationRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows));
+    const results = [];
+
+    for (const row of destinationRows) {
+      const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
+      const normalizedDestinationName = normalizeText(destinationName);
+      if (!normalizedDestinationName) {
+        continue;
+      }
+
+      if (sourceRowsByName.has(normalizedDestinationName)) {
+        results.push({
+          type: "matched",
+          destinationName
+        });
+        continue;
+      }
+
+      const quantity = getDestinationQuantity(row);
+      if (quantity === 0) {
+        results.push({
+          type: "already-zero",
+          destinationName
+        });
+        continue;
+      }
+
+      const zeroResult = await zeroOutDestinationLineItem(row, destinationName, quantity);
+      results.push(zeroResult);
+    }
+
+    await InvoiceLogger.logEvent("info", "destination-content", "line-item-rules-applied", results);
+    return results;
+  }
+
+  async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
+    emphasizeElement(row, "rgba(217, 119, 6, 0.24)");
+
+    const editButton = findLineItemEditButton(row);
+    if (!editButton) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-edit-missing", {
+        destinationName
+      });
+      return {
+        type: "missing-edit-button",
+        destinationName,
+        previousQuantity
+      };
+    }
+
+    editButton.click();
+    await sleep(300);
+
+    const editorRoot = await waitForLineItemEditor();
+    if (!editorRoot) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-missing", {
+        destinationName
+      });
+      return {
+        type: "editor-not-opened",
+        destinationName,
+        previousQuantity
+      };
+    }
+
+    const quantityUpdated = setLabeledFieldValue(editorRoot, ["Kolicina"], "0");
+    const netAmountUpdated = setLabeledFieldValue(
+      editorRoot,
+      ["Neto iznos stavke", "Neto cijena artikla"],
+      "0"
+    );
+
+    if (!quantityUpdated && !netAmountUpdated) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-zero-fields-missing", {
+        destinationName
+      });
+      return {
+        type: "zero-fields-missing",
+        destinationName,
+        previousQuantity
+      };
+    }
+
+    const saveButton = findActionButton(editorRoot, ["Spremi", "Save", "OK", "Potvrdi"]);
+    if (!saveButton) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
+        destinationName
+      });
+      return {
+        type: "save-button-missing",
+        destinationName,
+        previousQuantity
+      };
+    }
+
+    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
+    saveButton.click();
+    await sleep(500);
+
+    await InvoiceLogger.logEvent("info", "destination-content", "line-item-zeroed", {
+      destinationName,
+      previousQuantity
+    });
+
+    return {
+      type: "zeroed",
+      destinationName,
+      previousQuantity
+    };
+  }
+
+  function findLineItemEditButton(row) {
+    const editIcon = row.querySelector(DESTINATION_CONFIG.lineItems.editButton);
+    return editIcon?.closest("button") || null;
+  }
+
+  async function waitForLineItemEditor(timeoutMs = 3000) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      const editorRoot = document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot);
+      if (editorRoot) {
+        return editorRoot;
+      }
+      await sleep(150);
+    }
+
+    return null;
+  }
+
+  function setLabeledFieldValue(root, labelCandidates, value) {
+    for (const candidate of labelCandidates) {
+      const normalizedCandidate = normalizeText(candidate);
+      const labels = Array.from(root.querySelectorAll("label"));
+      const label = labels.find(
+        (item) => normalizeText(item.textContent || "").includes(normalizedCandidate)
+      );
+
+      if (!label) {
+        continue;
+      }
+
+      const fieldId = label.getAttribute("for");
+      const explicitField = fieldId ? root.querySelector(`#${CSS.escape(fieldId)}`) : null;
+      const field =
+        explicitField ||
+        label.closest(".ant-form-item")?.querySelector("input, textarea") ||
+        label.parentElement?.parentElement?.querySelector("input, textarea");
+
+      if (!field || field.disabled) {
+        continue;
+      }
+
+      writeValue(field, value);
+      return true;
+    }
+
+    return false;
+  }
+
+  function findActionButton(root, labelCandidates) {
+    const buttons = Array.from(root.querySelectorAll("button"));
+    return (
+      buttons.find((button) => {
+        const text = normalizeText(button.textContent || "");
+        return labelCandidates.some((candidate) => text.includes(normalizeText(candidate)));
+      }) || null
+    );
+  }
+
+  function getDestinationQuantity(row) {
+    const cells = row.querySelectorAll("td");
+    return parseLocaleNumber(cells[3]?.textContent || "");
+  }
+
   function getSourceLineItemName(row) {
     const candidateHeaders = [
       "Ime/Destinacija tarife",
@@ -327,10 +657,17 @@
   }
 
   function writeValue(element, value) {
+    if (!element) {
+      return;
+    }
+
+    emphasizeElement(element);
+
     if (element.matches("input, textarea")) {
       setReactInputValue(element, value);
       element.dispatchEvent(new Event("input", { bubbles: true }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new Event("blur", { bubbles: true }));
       return;
     }
 
@@ -404,6 +741,55 @@
       .replace(/\s+/g, " ")
       .trim()
       .toUpperCase();
+  }
+
+  function parseLocaleNumber(value) {
+    const normalized = String(value || "")
+      .replace(/\./g, "")
+      .replace(",", ".")
+      .replace(/[^\d.-]/g, "");
+
+    return Number.parseFloat(normalized) || 0;
+  }
+
+  function getRowNumericId(row) {
+    const cells = row.querySelectorAll("td");
+    const idText = cells[DESTINATION_CONFIG.resultsIdCellIndex]?.textContent || "";
+    return Number.parseInt(idText.replace(/\D+/g, ""), 10) || 0;
+  }
+
+  function summarizeSearchRow(row) {
+    const cells = row.querySelectorAll("td");
+    return {
+      id: normalizeText(cells[DESTINATION_CONFIG.resultsIdCellIndex]?.textContent || ""),
+      invoiceNumber: normalizeText(
+        cells[DESTINATION_CONFIG.resultsInvoiceNumberCellIndex]?.textContent || ""
+      ),
+      customer: normalizeText(cells[DESTINATION_CONFIG.resultsCustomerCellIndex]?.textContent || "")
+    };
+  }
+
+  function emphasizeElement(element, color = "rgba(255, 196, 0, 0.32)") {
+    if (!element || !element.style) {
+      return;
+    }
+
+    const previousTransition = element.style.transition;
+    const previousBoxShadow = element.style.boxShadow;
+    const previousOutline = element.style.outline;
+    const previousBackground = element.style.backgroundColor;
+
+    element.style.transition = "box-shadow 0.18s ease, outline 0.18s ease, background-color 0.18s ease";
+    element.style.boxShadow = `0 0 0 4px ${color}`;
+    element.style.outline = "2px solid rgba(21, 94, 239, 0.75)";
+    element.style.backgroundColor = color;
+
+    window.setTimeout(() => {
+      element.style.transition = previousTransition;
+      element.style.boxShadow = previousBoxShadow;
+      element.style.outline = previousOutline;
+      element.style.backgroundColor = previousBackground;
+    }, 2000);
   }
 
   function sleep(ms) {
