@@ -82,7 +82,7 @@ Content script logs:
 - Source URL:
   `https://www.telioservices.hr/PrisonLevelInvoiceReport/Generate`
 - Destination URL:
-  `https://digitalneusluge.fina.hr/eRacunB2B/izlazni/dokumenti/pretraga`
+  `https://digitalneusluge.fina.hr/eRacunB2B/dokument/pretraga`
 - Source table selector:
   `table.reportTable`
 - Current confirmed mapping:

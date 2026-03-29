@@ -15,11 +15,8 @@
     financialPeriodSelect: "#financialPeriod",
     organizationPresentationInput: "#ouGroup",
     organizationHiddenInput: 'input[name="ouGroup"]',
-    htmlModeLabel: "#select2-w5j6-container",
     generateButton: ".report-generate input[type='button']",
-    reportTable: "table.reportTable",
-    skipFirstBodyRow: true,
-    skipLastBodyRow: true
+    reportTable: "table.reportTable"
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -95,7 +92,6 @@
     const periodSelect = mustQuery(SOURCE_CONFIG.financialPeriodSelect);
     const orgPresentationInput = mustQuery(SOURCE_CONFIG.organizationPresentationInput);
     const orgHiddenInput = mustQuery(SOURCE_CONFIG.organizationHiddenInput);
-    const htmlModeLabel = mustQuery(SOURCE_CONFIG.htmlModeLabel);
     const generateButton = mustQuery(SOURCE_CONFIG.generateButton);
 
     const previousMonthOption = findPreviousMonthOption(periodSelect);
@@ -116,11 +112,19 @@
       throw new Error("Organizational unit must be selected by the user.");
     }
 
-    if (htmlModeLabel.textContent.trim().toUpperCase() !== "HTML") {
-      await InvoiceLogger.logEvent("warn", "source-content", "html-mode-not-selected", {
-        currentValue: htmlModeLabel.textContent.trim()
+    const htmlModeLabel = document.querySelector('[id*="select2-"][id*="-container"]');
+    if (htmlModeLabel) {
+      const currentFormat = htmlModeLabel.textContent.trim();
+      if (currentFormat.toUpperCase() !== "HTML") {
+        await InvoiceLogger.logEvent("warn", "source-content", "html-mode-not-selected", {
+          currentValue: currentFormat
+        });
+        throw new Error("HTML mode is not currently selected for report generation.");
+      }
+    } else {
+      await InvoiceLogger.logEvent("warn", "source-content", "html-mode-selector-missing", {
+        note: "Continuing without strict HTML selector check."
       });
-      throw new Error("HTML mode is not currently selected for report generation.");
     }
 
     await safeSet({
@@ -145,16 +149,10 @@
       normalizeCellText(cell.textContent)
     );
 
-    let bodyRows = Array.from(table.querySelectorAll("tbody tr"));
-    if (SOURCE_CONFIG.skipFirstBodyRow && bodyRows.length > 0) {
-      bodyRows = bodyRows.slice(1);
-    }
-    if (SOURCE_CONFIG.skipLastBodyRow && bodyRows.length > 0) {
-      bodyRows = bodyRows.slice(0, -1);
-    }
-
+    const bodyRows = Array.from(table.querySelectorAll("tbody tr"));
     const extractedRows = bodyRows
       .map((row) => rowToObject(row, headers))
+      .filter((row) => isMeaningfulDataRow(row))
       .filter((row) => Object.values(row).some((value) => value !== ""));
 
     await InvoiceLogger.logEvent("info", "source-content", "rows-read", {
@@ -192,6 +190,21 @@
       accumulator[header] = normalizeCellText(cells[index]?.textContent || "");
       return accumulator;
     }, {});
+  }
+
+  function isMeaningfulDataRow(row) {
+    const values = Object.values(row || {}).map((value) => normalizeCellText(String(value || "")));
+    const firstValue = values[0] || "";
+
+    if (!values.some(Boolean)) {
+      return false;
+    }
+
+    if (/^ukupno$/i.test(firstValue)) {
+      return false;
+    }
+
+    return true;
   }
 
   function extractMetaFromReport() {

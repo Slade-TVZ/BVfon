@@ -11,7 +11,7 @@
   };
 
   const DESTINATION_CONFIG = {
-    searchPagePath: "/eRacunB2B/izlazni/dokumenti/pretraga",
+    searchPagePath: "/eRacunB2B/dokument/pretraga",
     resultsRows: ".ant-table-tbody tr.ant-table-row.row-link",
     resultsCustomerCellIndex: 2,
     nextPageButton: ".ant-pagination-next button",
