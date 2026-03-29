@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Invoice Helper",
-  "version": "0.2.0",
-  "description": "Manifest V3 Chrome extension with extract/fill workflow and local debug logging.",
+  "version": "0.3.0",
+  "description": "Manifest V3 Chrome extension with compact controls for extract/fill workflow.",
   "permissions": [
     "storage",
     "alarms",
@@ -10,8 +10,7 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://www.telioservices.hr/PrisonLevelInvoiceReport/*",
-    "https://digitalneusluge.fina.hr/eRacunB2B/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "service-worker.js"
@@ -19,5 +18,16 @@
   "action": {
     "default_title": "Invoice Helper",
     "default_popup": "popup.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "floating-panel.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

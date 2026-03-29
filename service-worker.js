@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   pendingExtraction: "pendingExtraction",
   pendingDestinationInvoiceNumber: "pendingDestinationInvoiceNumber"
 };
+const TELIO_REPORT_PATH_FRAGMENT = "/PrisonLevelInvoiceReport/";
 
 initializeServiceWorker();
 
@@ -19,12 +20,25 @@ chrome.runtime.onStartup.addListener(() => {
   initializeServiceWorker();
 });
 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete" || !tab?.url?.includes(TELIO_REPORT_PATH_FRAGMENT)) {
+    return;
+  }
+
+  resumePendingSourceExtraction(tabId).catch(async (error) => {
+    await InvoiceLogger.logEvent("error", "service-worker", "resume-pending-extraction-failed", {
+      tabId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+});
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== CLEANUP_ALARM_NAME) {
     return;
   }
 
-  await InvoiceLogger.pruneOldLogs();
+  await InvoiceLogger.pruneOldLogs(5);
   await InvoiceLogger.logEvent("info", "service-worker", "alarm-prune-complete", {
     alarmName: alarm.name
   });
@@ -53,7 +67,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function initializeServiceWorker() {
-  await InvoiceLogger.pruneOldLogs();
+  await InvoiceLogger.pruneOldLogs(5);
 
   await chrome.alarms.create(CLEANUP_ALARM_NAME, {
     periodInMinutes: CLEANUP_PERIOD_MINUTES
@@ -61,6 +75,28 @@ async function initializeServiceWorker() {
 
   await InvoiceLogger.logEvent("info", "service-worker", "startup-complete", {
     cleanupEveryMinutes: CLEANUP_PERIOD_MINUTES
+  });
+}
+
+async function resumePendingSourceExtraction(tabId) {
+  const storage = await chrome.storage.local.get([STORAGE_KEYS.pendingExtraction]);
+  if (!storage[STORAGE_KEYS.pendingExtraction]) {
+    return;
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["logger.js", "source-content.js"]
+  });
+
+  await InvoiceLogger.logEvent("info", "service-worker", "pending-extraction-scripts-injected", {
+    tabId
+  });
+
+  const response = await chrome.tabs.sendMessage(tabId, { type: "AUTO_EXTRACT_IF_PENDING" });
+  await InvoiceLogger.logEvent("info", "service-worker", "pending-extraction-resume-sent", {
+    tabId,
+    response
   });
 }
 

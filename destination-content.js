@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v3";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v4";
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -137,7 +137,7 @@
 
     if (isEditableDocument) {
       const pendingInvoiceNumber = await applyPendingInvoiceNumber();
-      const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber);
+      const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
       const lineItemMatch = await findMatchingLineItem(extractedRows);
 
@@ -361,12 +361,13 @@
     }) || null;
   }
 
-  async function seedKnownDocumentFields(pendingInvoiceNumber) {
+  async function seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta) {
     const selectors = DESTINATION_CONFIG.editableDocumentSelectors;
     const updates = [];
     const now = new Date();
     const dueDate = new Date(now.getFullYear(), now.getMonth(), 17);
     const shortReference = buildShortReference(pendingInvoiceNumber);
+    const invoicePeriod = parseFinancialPeriod(extractionMeta?.financialPeriod || "");
 
     updates.push(await setField(selectors.issueDate, formatCroatianDate(now, true), "issue-date"));
     updates.push(await setField(selectors.issueTime, formatTime(now), "issue-time"));
@@ -380,7 +381,7 @@
       );
     }
 
-    updates.push(await setInvoicePeriodRange(selectors.invoicePeriodInputs, now));
+    updates.push(await setInvoicePeriodRange(selectors.invoicePeriodInputs, invoicePeriod || now));
 
     return updates.filter(Boolean);
   }
@@ -414,8 +415,12 @@
       return null;
     }
 
-    const startDate = new Date(referenceDate.getFullYear(), referenceDate.getMonth() - 1, 1);
-    const endDate = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 0);
+    const startDate =
+      referenceDate?.from ||
+      new Date(referenceDate.getFullYear(), referenceDate.getMonth() - 1, 1);
+    const endDate =
+      referenceDate?.to ||
+      new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 0);
 
     writeValue(inputs[0], formatCroatianDate(startDate, false));
     writeValue(inputs[1], formatCroatianDate(endDate, false));
@@ -469,21 +474,33 @@
         })
         .filter(Boolean)
     );
-    const destinationRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows));
+    const destinationNames = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows))
+      .map((row) => row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "")
+      .filter(Boolean);
     const results = [];
 
-    for (const row of destinationRows) {
-      const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
+    for (const destinationName of destinationNames) {
       const normalizedDestinationName = normalizeText(destinationName);
       if (!normalizedDestinationName) {
         continue;
       }
 
-      if (sourceRowsByName.has(normalizedDestinationName)) {
+      const row = findDestinationRowByNormalizedName(normalizedDestinationName);
+      if (!row) {
         results.push({
-          type: "matched",
+          type: "destination-row-missing",
           destinationName
         });
+        continue;
+      }
+
+      if (sourceRowsByName.has(normalizedDestinationName)) {
+        const updateResult = await updateDestinationLineItem(
+          row,
+          destinationName,
+          sourceRowsByName.get(normalizedDestinationName)
+        );
+        results.push(updateResult);
         continue;
       }
 
@@ -506,42 +523,21 @@
 
   async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
     emphasizeElement(row, "rgba(217, 119, 6, 0.24)");
-
-    const editButton = findLineItemEditButton(row);
-    if (!editButton) {
-      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-edit-missing", {
-        destinationName
-      });
-      return {
-        type: "missing-edit-button",
-        destinationName,
-        previousQuantity
-      };
+    const editContext = await openLineItemEditor(row, destinationName);
+    if (!editContext.ok) {
+      return editContext.result;
     }
 
-    editButton.click();
-    await sleep(300);
-
-    const editorRoot = await waitForLineItemEditor();
-    if (!editorRoot) {
-      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-missing", {
-        destinationName
-      });
-      return {
-        type: "editor-not-opened",
-        destinationName,
-        previousQuantity
-      };
-    }
-
+    const { editorRoot, saveButton } = editContext;
     const quantityUpdated = setLabeledFieldValue(editorRoot, ["Kolicina"], "0");
-    const netAmountUpdated = setLabeledFieldValue(
+    const unitPriceUpdated = setLabeledFieldValue(
       editorRoot,
-      ["Neto iznos stavke", "Neto cijena artikla"],
+      ["Jedinicna cijena artikla", "Neto cijena artikla"],
       "0"
     );
+    const netAmountUpdated = setLabeledFieldValue(editorRoot, ["Neto iznos stavke"], "0");
 
-    if (!quantityUpdated && !netAmountUpdated) {
+    if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-zero-fields-missing", {
         destinationName
       });
@@ -552,21 +548,7 @@
       };
     }
 
-    const saveButton = findActionButton(editorRoot, ["Spremi", "Save", "OK", "Potvrdi"]);
-    if (!saveButton) {
-      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
-        destinationName
-      });
-      return {
-        type: "save-button-missing",
-        destinationName,
-        previousQuantity
-      };
-    }
-
-    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
-    saveButton.click();
-    await sleep(500);
+    await saveLineItemEditor(saveButton);
 
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-zeroed", {
       destinationName,
@@ -577,6 +559,86 @@
       type: "zeroed",
       destinationName,
       previousQuantity
+    };
+  }
+
+  async function updateDestinationLineItem(row, destinationName, sourceRow) {
+    const sourceQuantityRaw = getSourceFieldValue(sourceRow, ["Naplacene jedinice"]);
+    const sourceUnitPriceRaw = getSourceFieldValue(sourceRow, ["Ocijenite"]);
+    const sourceNetAmountRaw = getSourceFieldValue(sourceRow, ["Potrosnja zatvorenika"]);
+    const sourceQuantity = parseLocaleNumber(sourceQuantityRaw);
+    const sourceUnitPrice = parseLocaleNumber(sourceUnitPriceRaw);
+    const sourceNetAmount = parseLocaleNumber(sourceNetAmountRaw);
+    const currentQuantity = getDestinationQuantity(row);
+    const currentNetAmount = getDestinationNetAmount(row);
+
+    if (
+      areNumbersClose(currentQuantity, sourceQuantity) &&
+      areNumbersClose(currentNetAmount, sourceNetAmount)
+    ) {
+      return {
+        type: "already-synced",
+        destinationName,
+        quantity: sourceQuantity,
+        netAmount: sourceNetAmount
+      };
+    }
+
+    emphasizeElement(row, "rgba(21, 94, 239, 0.22)");
+    const editContext = await openLineItemEditor(row, destinationName);
+    if (!editContext.ok) {
+      return editContext.result;
+    }
+
+    const { editorRoot, saveButton } = editContext;
+    const quantityUpdated = sourceQuantityRaw
+      ? setLabeledFieldValue(editorRoot, ["Kolicina"], normalizeNumericInput(sourceQuantityRaw))
+      : false;
+    const unitPriceUpdated = sourceUnitPriceRaw
+      ? setLabeledFieldValue(
+          editorRoot,
+          ["Jedinicna cijena artikla", "Neto cijena artikla"],
+          normalizeNumericInput(sourceUnitPriceRaw)
+        )
+      : false;
+    const netAmountUpdated = sourceNetAmountRaw
+      ? setLabeledFieldValue(
+          editorRoot,
+          ["Neto iznos stavke"],
+          normalizeNumericInput(sourceNetAmountRaw)
+        )
+      : false;
+
+    if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-update-fields-missing", {
+        destinationName,
+        sourceQuantityRaw,
+        sourceUnitPriceRaw,
+        sourceNetAmountRaw
+      });
+      return {
+        type: "update-fields-missing",
+        destinationName,
+        quantity: sourceQuantity,
+        unitPrice: sourceUnitPrice,
+        netAmount: sourceNetAmount
+      };
+    }
+
+    await saveLineItemEditor(saveButton);
+    await InvoiceLogger.logEvent("info", "destination-content", "line-item-updated", {
+      destinationName,
+      quantity: sourceQuantity,
+      unitPrice: sourceUnitPrice,
+      netAmount: sourceNetAmount
+    });
+
+    return {
+      type: "updated",
+      destinationName,
+      quantity: sourceQuantity,
+      unitPrice: sourceUnitPrice,
+      netAmount: sourceNetAmount
     };
   }
 
@@ -597,6 +659,79 @@
     }
 
     return null;
+  }
+
+  async function openLineItemEditor(row, destinationName) {
+    const editButton = findLineItemEditButton(row);
+    if (!editButton) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-edit-missing", {
+        destinationName
+      });
+      return {
+        ok: false,
+        result: {
+          type: "missing-edit-button",
+          destinationName
+        }
+      };
+    }
+
+    editButton.click();
+    await sleep(300);
+
+    const editorRoot = await waitForLineItemEditor();
+    if (!editorRoot) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-missing", {
+        destinationName
+      });
+      return {
+        ok: false,
+        result: {
+          type: "editor-not-opened",
+          destinationName
+        }
+      };
+    }
+
+    const saveButton = findActionButton(editorRoot, ["Spremi", "Save", "OK", "Potvrdi"]);
+    if (!saveButton) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
+        destinationName
+      });
+      return {
+        ok: false,
+        result: {
+          type: "save-button-missing",
+          destinationName
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      editorRoot,
+      saveButton
+    };
+  }
+
+  async function saveLineItemEditor(saveButton) {
+    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
+    saveButton.click();
+    await waitForEditorToClose();
+    await sleep(250);
+  }
+
+  async function waitForEditorToClose(timeoutMs = 4000) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      if (!document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot)) {
+        return true;
+      }
+      await sleep(150);
+    }
+
+    return false;
   }
 
   function setLabeledFieldValue(root, labelCandidates, value) {
@@ -644,6 +779,18 @@
     return parseLocaleNumber(cells[3]?.textContent || "");
   }
 
+  function getDestinationNetAmount(row) {
+    const cells = row.querySelectorAll("td");
+    return parseLocaleNumber(cells[8]?.textContent || "");
+  }
+
+  function findDestinationRowByNormalizedName(normalizedDestinationName) {
+    return Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).find((row) => {
+      const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "";
+      return normalizeText(destinationName) === normalizedDestinationName;
+    }) || null;
+  }
+
   function getSourceLineItemName(row) {
     const candidateHeaders = [
       "Ime/Destinacija tarife",
@@ -654,6 +801,24 @@
     ];
 
     return candidateHeaders.map((header) => row?.[header]).find((value) => value && String(value).trim()) || "";
+  }
+
+  function getSourceFieldValue(row, candidateHeaders) {
+    return (
+      candidateHeaders
+        .map((header) => {
+          const normalizedHeader = normalizeText(header);
+          const directValue = row?.[header];
+          if (directValue != null && String(directValue).trim()) {
+            return directValue;
+          }
+
+          return Object.entries(row || {}).find(([key, value]) => {
+            return normalizeText(key) === normalizedHeader && String(value || "").trim();
+          })?.[1];
+        })
+        .find((value) => value != null && String(value).trim()) || ""
+    );
   }
 
   function writeValue(element, value) {
@@ -733,14 +898,45 @@
       .join(":");
   }
 
+  function parseFinancialPeriod(value) {
+    const matches = String(value || "").match(/(\d{1,2})\.(\d{1,2})\.(\d{4})\./g);
+    if (!matches || matches.length < 2) {
+      return null;
+    }
+
+    const [from, to] = matches.map(parseCroatianDateToken);
+    if (!from || !to) {
+      return null;
+    }
+
+    return { from, to };
+  }
+
+  function parseCroatianDateToken(token) {
+    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.$/.exec(String(token || "").trim());
+    if (!match) {
+      return null;
+    }
+
+    return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  }
+
   function normalizeText(value) {
     return (value || "")
+      .replace(/[đĐðÐ]/g, "d")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/\(\d+\)/g, "")
       .replace(/\s+/g, " ")
       .trim()
       .toUpperCase();
+  }
+
+  function normalizeNumericInput(value) {
+    return String(value || "")
+      .replace(/\s+/g, "")
+      .replace(/EUR/gi, "")
+      .trim();
   }
 
   function parseLocaleNumber(value) {
@@ -750,6 +946,10 @@
       .replace(/[^\d.-]/g, "");
 
     return Number.parseFloat(normalized) || 0;
+  }
+
+  function areNumbersClose(left, right) {
+    return Math.abs((left || 0) - (right || 0)) < 0.005;
   }
 
   function getRowNumericId(row) {

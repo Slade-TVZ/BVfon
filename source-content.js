@@ -1,13 +1,16 @@
 (function () {
-  if (globalThis.__invoiceHelperSourceInitialized) {
+  const SOURCE_SCRIPT_VERSION = "2026-03-29-source-v4";
+
+  if (globalThis.__invoiceHelperSourceInitialized === SOURCE_SCRIPT_VERSION) {
     return;
   }
-  globalThis.__invoiceHelperSourceInitialized = true;
+  globalThis.__invoiceHelperSourceInitialized = SOURCE_SCRIPT_VERSION;
 
   const STORAGE_KEYS = {
     extractedRows: "extractedRows",
     extractionMeta: "extractionMeta",
-    pendingExtraction: "pendingExtraction"
+    pendingExtraction: "pendingExtraction",
+    sourceOrganizationName: "sourceOrganizationName"
   };
 
   const SOURCE_CONFIG = {
@@ -15,8 +18,22 @@
     financialPeriodSelect: "#financialPeriod",
     organizationPresentationInput: "#ouGroup",
     organizationHiddenInput: 'input[name="ouGroup"]',
+    htmlModeLabel: "#select2-w5j6-container",
+    htmlModeSelect: ".report-generate select",
+    htmlModeSelectors: [
+      "#select2-w5j6-container",
+      ".report-generate .select2-selection__rendered",
+      ".report-generate .dropdown-toggle",
+      ".report-generate .btn.dropdown-toggle",
+      ".report-generate [data-toggle='dropdown']",
+      ".report-generate button",
+      ".report-generate .btn",
+      ".report-generate span"
+    ],
     generateButton: ".report-generate input[type='button']",
-    reportTable: "table.reportTable"
+    reportTable: "table.reportTable",
+    skipFirstBodyRow: true,
+    skipLastBodyRow: true
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -93,6 +110,7 @@
     const orgPresentationInput = mustQuery(SOURCE_CONFIG.organizationPresentationInput);
     const orgHiddenInput = mustQuery(SOURCE_CONFIG.organizationHiddenInput);
     const generateButton = mustQuery(SOURCE_CONFIG.generateButton);
+    const storage = await safeGet([STORAGE_KEYS.sourceOrganizationName]);
 
     const previousMonthOption = findPreviousMonthOption(periodSelect);
     if (!previousMonthOption) {
@@ -106,31 +124,34 @@
       value: previousMonthOption.textContent.trim()
     });
 
+    const desiredOrganization = normalizeCellText(storage[STORAGE_KEYS.sourceOrganizationName] || "");
+    if (desiredOrganization) {
+      await ensureOrganizationSelected(desiredOrganization, orgPresentationInput, orgHiddenInput);
+    }
+
     if (!orgPresentationInput.value.trim() || !orgHiddenInput.value.trim()) {
       await InvoiceLogger.logEvent("warn", "source-content", "organization-missing", "");
       InvoiceLogger.showStatusOverlay("Organization missing", "warn");
       throw new Error("Organizational unit must be selected by the user.");
     }
 
-    const htmlModeLabel = document.querySelector('[id*="select2-"][id*="-container"]');
-    if (htmlModeLabel) {
-      const currentFormat = htmlModeLabel.textContent.trim();
-      if (currentFormat.toUpperCase() !== "HTML") {
-        await InvoiceLogger.logEvent("warn", "source-content", "html-mode-not-selected", {
-          currentValue: currentFormat
-        });
-        throw new Error("HTML mode is not currently selected for report generation.");
-      }
-    } else {
-      await InvoiceLogger.logEvent("warn", "source-content", "html-mode-selector-missing", {
-        note: "Continuing without strict HTML selector check."
+    await ensureHtmlModeSelected();
+
+    if (!isHtmlModeSelected()) {
+      await InvoiceLogger.logEvent("warn", "source-content", "html-mode-not-selected", {
+        currentValue: getDetectedHtmlModeLabel()
       });
+      throw new Error("HTML mode is not currently selected for report generation.");
     }
+
+    await safeRemove([STORAGE_KEYS.extractedRows, STORAGE_KEYS.extractionMeta]);
+    await InvoiceLogger.logEvent("info", "source-content", "stale-extraction-cleared", "");
 
     await safeSet({
       [STORAGE_KEYS.pendingExtraction]: {
         startedAt: new Date().toISOString(),
-        organizationName: orgPresentationInput.value.trim()
+        organizationName: orgPresentationInput.value.trim(),
+        expectedFinancialPeriod: normalizeCellText(previousMonthOption.textContent)
       }
     });
 
@@ -149,10 +170,16 @@
       normalizeCellText(cell.textContent)
     );
 
-    const bodyRows = Array.from(table.querySelectorAll("tbody tr"));
+    let bodyRows = Array.from(table.querySelectorAll("tbody tr"));
+    if (SOURCE_CONFIG.skipFirstBodyRow && bodyRows.length > 0) {
+      bodyRows = bodyRows.slice(1);
+    }
+    if (SOURCE_CONFIG.skipLastBodyRow && bodyRows.length > 0) {
+      bodyRows = bodyRows.slice(0, -1);
+    }
+
     const extractedRows = bodyRows
       .map((row) => rowToObject(row, headers))
-      .filter((row) => isMeaningfulDataRow(row))
       .filter((row) => Object.values(row).some((value) => value !== ""));
 
     await InvoiceLogger.logEvent("info", "source-content", "rows-read", {
@@ -161,6 +188,7 @@
     });
 
     const extractionMeta = extractMetaFromReport();
+    await validateExtractedFinancialPeriod(extractionMeta);
     await InvoiceLogger.logEvent("info", "source-content", "saving-extracted-data", {
       rowCount: extractedRows.length,
       extractionMeta
@@ -184,27 +212,33 @@
     };
   }
 
+  async function validateExtractedFinancialPeriod(extractionMeta) {
+    const expectedFinancialPeriod = normalizeCellText(formatPreviousMonthRange());
+    const actualFinancialPeriod = normalizeCellText(extractionMeta.financialPeriod || "");
+
+    if (!actualFinancialPeriod) {
+      await InvoiceLogger.logEvent("warn", "source-content", "financial-period-missing-in-report", "");
+      return;
+    }
+
+    if (actualFinancialPeriod !== expectedFinancialPeriod) {
+      await InvoiceLogger.logEvent("error", "source-content", "financial-period-mismatch", {
+        expectedFinancialPeriod,
+        actualFinancialPeriod
+      });
+      InvoiceLogger.showStatusOverlay("Wrong financial period on report", "error");
+      throw new Error(
+        `Financial period mismatch. Expected "${expectedFinancialPeriod}", got "${actualFinancialPeriod}".`
+      );
+    }
+  }
+
   function rowToObject(row, headers) {
     const cells = Array.from(row.querySelectorAll("td"));
     return headers.reduce((accumulator, header, index) => {
       accumulator[header] = normalizeCellText(cells[index]?.textContent || "");
       return accumulator;
     }, {});
-  }
-
-  function isMeaningfulDataRow(row) {
-    const values = Object.values(row || {}).map((value) => normalizeCellText(String(value || "")));
-    const firstValue = values[0] || "";
-
-    if (!values.some(Boolean)) {
-      return false;
-    }
-
-    if (/^ukupno$/i.test(firstValue)) {
-      return false;
-    }
-
-    return true;
   }
 
   function extractMetaFromReport() {
@@ -269,11 +303,270 @@
       .trim();
   }
 
+  async function ensureOrganizationSelected(desiredOrganization, orgPresentationInput, orgHiddenInput) {
+    const currentOrganization = normalizeCellText(
+      orgPresentationInput.value || orgPresentationInput.getAttribute("title") || ""
+    );
+
+    if (
+      currentOrganization &&
+      normalizeCellText(currentOrganization).toUpperCase() === desiredOrganization.toUpperCase() &&
+      orgHiddenInput.value.trim()
+    ) {
+      await InvoiceLogger.logEvent("info", "source-content", "organization-already-selected", {
+        desiredOrganization,
+        currentOrganization
+      });
+      return;
+    }
+
+    setElementValue(orgPresentationInput, desiredOrganization);
+    orgPresentationInput.dispatchEvent(new Event("input", { bubbles: true }));
+    orgPresentationInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "c" }));
+    orgPresentationInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await delay(250);
+
+    const suggestion = findOrganizationSuggestion(desiredOrganization);
+    if (!suggestion) {
+      await InvoiceLogger.logEvent("warn", "source-content", "organization-suggestion-missing", {
+        desiredOrganization
+      });
+      return;
+    }
+
+    suggestion.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    suggestion.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    suggestion.click();
+
+    await delay(250);
+
+    const selectedOrganization = normalizeCellText(
+      orgPresentationInput.value || orgPresentationInput.getAttribute("title") || ""
+    );
+
+    await InvoiceLogger.logEvent("info", "source-content", "organization-selection-attempted", {
+      desiredOrganization,
+      selectedOrganization,
+      hiddenValue: orgHiddenInput.value.trim()
+    });
+  }
+
+  function findOrganizationSuggestion(desiredOrganization) {
+    const desiredUpper = desiredOrganization.toUpperCase();
+    const suggestions = Array.from(document.querySelectorAll(".autocomplete-suggestion"));
+
+    return (
+      suggestions.find((suggestion) => {
+        const text = normalizeCellText(suggestion.textContent).toUpperCase();
+        return text === desiredUpper;
+      }) ||
+      suggestions.find((suggestion) => {
+        const text = normalizeCellText(suggestion.textContent).toUpperCase();
+        return text.includes(desiredUpper);
+      }) ||
+      null
+    );
+  }
+
   function normalizeCellText(value) {
     return (value || "")
       .replace(/\u00a0/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function isHtmlModeSelected() {
+    const htmlModeSelect = findHtmlModeSelect();
+    const selectValue = normalizeCellText(htmlModeSelect?.value || "").toUpperCase();
+    if (selectValue === "PDFHTML") {
+      return true;
+    }
+
+    const detectedLabel = normalizeCellText(getDetectedHtmlModeLabel()).toUpperCase();
+    return detectedLabel === "HTML";
+  }
+
+  async function ensureHtmlModeSelected() {
+    if (isHtmlModeSelected()) {
+      return;
+    }
+
+    const htmlModeSelect = findHtmlModeSelect();
+    const htmlModeOption = htmlModeSelect
+      ? Array.from(htmlModeSelect.options).find((option) =>
+          normalizeCellText(option.textContent).toUpperCase() === "HTML" ||
+          normalizeCellText(option.value).toUpperCase() === "PDFHTML"
+        )
+      : null;
+
+    if (!htmlModeSelect || !htmlModeOption) {
+      await InvoiceLogger.logEvent("warn", "source-content", "html-mode-select-missing", {
+        currentValue: getDetectedHtmlModeLabel()
+      });
+      return;
+    }
+
+    Array.from(htmlModeSelect.options).forEach((option) => {
+      option.selected = option.value === htmlModeOption.value;
+    });
+    htmlModeSelect.selectedIndex = Array.from(htmlModeSelect.options).findIndex(
+      (option) => option.value === htmlModeOption.value
+    );
+    setElementValue(htmlModeSelect, htmlModeOption.value);
+    htmlModeSelect.dispatchEvent(new Event("input", { bubbles: true }));
+    htmlModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    htmlModeSelect.dispatchEvent(new Event("blur", { bubbles: true }));
+    htmlModeSelect.dispatchEvent(new Event("click", { bubbles: true }));
+
+    const jquery = globalThis.jQuery || globalThis.$;
+    if (typeof jquery === "function") {
+      try {
+        jquery(htmlModeSelect).val(htmlModeOption.value).trigger("change");
+      } catch (_error) {
+        // Ignore jQuery wiring issues and keep native events as fallback.
+      }
+    }
+
+    syncRenderedHtmlModeLabel(htmlModeSelect, htmlModeOption.textContent.trim());
+    await delay(75);
+
+    if (isHtmlModeSelected()) {
+      await InvoiceLogger.logEvent("info", "source-content", "html-mode-set", {
+        value: htmlModeOption.textContent.trim(),
+        strategy: "native-select"
+      });
+      return;
+    }
+
+    const htmlModeSelectedViaUi = await selectHtmlModeThroughUi(htmlModeSelect, htmlModeOption);
+    if (htmlModeSelectedViaUi && isHtmlModeSelected()) {
+      await InvoiceLogger.logEvent("info", "source-content", "html-mode-set", {
+        value: htmlModeOption.textContent.trim(),
+        strategy: "select2-ui"
+      });
+      return;
+    }
+
+    await InvoiceLogger.logEvent("warn", "source-content", "html-mode-set-unsure", {
+      detectedLabel: getDetectedHtmlModeLabel(),
+      selectValue: htmlModeSelect.value
+    });
+  }
+
+  function syncRenderedHtmlModeLabel(htmlModeSelect, labelText) {
+    const renderedLabel = htmlModeSelect
+      .closest(".report-generate")
+      ?.querySelector(".select2-selection__rendered");
+
+    if (!renderedLabel) {
+      return;
+    }
+
+    renderedLabel.textContent = labelText;
+    renderedLabel.setAttribute("title", labelText);
+  }
+
+  async function selectHtmlModeThroughUi(htmlModeSelect, htmlModeOption) {
+    const selectContainer = htmlModeSelect.closest(".report-generate");
+    const selection = selectContainer?.querySelector(".select2-selection");
+    const arrow = selectContainer?.querySelector(".select2-selection__arrow");
+    if (!selection) {
+      return false;
+    }
+
+    for (const candidate of [selection, arrow].filter(Boolean)) {
+      candidate.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      candidate.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      candidate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
+
+    await delay(150);
+
+    const activeDescendantId = selection.getAttribute("aria-activedescendant") || "";
+    const activeDescendant = activeDescendantId
+      ? document.getElementById(activeDescendantId)
+      : null;
+
+    if (activeDescendant) {
+      const activeText = normalizeCellText(activeDescendant.textContent).toUpperCase();
+      const expectedText = normalizeCellText(htmlModeOption.textContent).toUpperCase();
+
+      if (activeText === expectedText) {
+        for (const candidate of [selection, activeDescendant]) {
+          candidate.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, key: "Enter", code: "Enter" })
+          );
+          candidate.dispatchEvent(
+            new KeyboardEvent("keyup", { bubbles: true, key: "Enter", code: "Enter" })
+          );
+        }
+
+        await delay(150);
+      }
+    }
+
+    const optionElements = Array.from(
+      document.querySelectorAll(".select2-results__option, .select2-dropdown .select2-results li")
+    );
+    const htmlOptionElement = optionElements.find((element) => {
+      const text = normalizeCellText(element.textContent).toUpperCase();
+      return text === normalizeCellText(htmlModeOption.textContent).toUpperCase();
+    });
+
+    if (!htmlOptionElement) {
+      return false;
+    }
+
+    htmlOptionElement.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    htmlOptionElement.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    htmlOptionElement.click();
+
+    htmlModeSelect.value = htmlModeOption.value;
+    htmlModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    syncRenderedHtmlModeLabel(htmlModeSelect, htmlModeOption.textContent.trim());
+
+    await delay(150);
+    return true;
+  }
+
+  function findHtmlModeSelect() {
+    const selects = Array.from(document.querySelectorAll(SOURCE_CONFIG.htmlModeSelect));
+    return (
+      selects.find((select) =>
+        Array.from(select.options).some((option) => {
+          const text = normalizeCellText(option.textContent).toUpperCase();
+          const value = normalizeCellText(option.value).toUpperCase();
+          return text === "HTML" || value === "PDFHTML";
+        })
+      ) || null
+    );
+  }
+
+  function getDetectedHtmlModeLabel() {
+    for (const selector of SOURCE_CONFIG.htmlModeSelectors) {
+      const elements = Array.from(document.querySelectorAll(selector));
+
+      for (const element of elements) {
+        const text = normalizeCellText(element?.textContent || "");
+        if (text.toUpperCase() === "HTML") {
+          return text;
+        }
+      }
+    }
+
+    for (const selector of SOURCE_CONFIG.htmlModeSelectors) {
+      const elements = Array.from(document.querySelectorAll(selector));
+
+      for (const element of elements) {
+        const text = normalizeCellText(element?.textContent || "");
+        if (text) {
+          return text;
+        }
+      }
+    }
+
+    return "";
   }
 
   function setElementValue(element, value) {
@@ -283,6 +576,12 @@
     } else {
       element.value = value;
     }
+  }
+
+  function delay(milliseconds) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, milliseconds);
+    });
   }
 
   function mustQuery(selector) {

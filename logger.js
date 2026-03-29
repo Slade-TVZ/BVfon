@@ -1,8 +1,8 @@
 (function () {
   const LOGS_KEY = "extensionLogs";
   const DEBUG_MODE_KEY = "debugMode";
-  const DEFAULT_MAX_AGE_DAYS = null;
-  const DEFAULT_MAX_LOGS = null;
+  const DEFAULT_MAX_AGE_DAYS = 5;
+  const DEFAULT_MAX_LOGS = 2000;
 
   function toSerializable(details) {
     if (details instanceof Error) {
@@ -60,21 +60,14 @@
   }
 
   async function pruneOldLogs(maxAgeDays = DEFAULT_MAX_AGE_DAYS) {
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - maxAgeMs;
     const logs = await getStorageValue(LOGS_KEY, []);
 
-    let prunedLogs = logs
-      .slice()
-      .sort((left, right) => Number(left.epochMs || 0) - Number(right.epochMs || 0));
-
-    if (typeof maxAgeDays === "number" && Number.isFinite(maxAgeDays) && maxAgeDays >= 0) {
-      const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
-      const cutoff = Date.now() - maxAgeMs;
-      prunedLogs = prunedLogs.filter((log) => Number(log?.epochMs || 0) >= cutoff);
-    }
-
-    if (typeof DEFAULT_MAX_LOGS === "number" && Number.isFinite(DEFAULT_MAX_LOGS) && DEFAULT_MAX_LOGS > 0) {
-      prunedLogs = prunedLogs.slice(-DEFAULT_MAX_LOGS);
-    }
+    const prunedLogs = logs
+      .filter((log) => Number(log?.epochMs || 0) >= cutoff)
+      .sort((left, right) => Number(left.epochMs || 0) - Number(right.epochMs || 0))
+      .slice(-DEFAULT_MAX_LOGS);
 
     await setStorageValue({ [LOGS_KEY]: prunedLogs });
     return prunedLogs;
@@ -100,7 +93,7 @@
     };
 
     const cleanedLogs = await pruneOldLogs();
-    const nextLogs = cleanedLogs.concat(logRecord);
+    const nextLogs = cleanedLogs.concat(logRecord).slice(-DEFAULT_MAX_LOGS);
     await setStorageValue({ [LOGS_KEY]: nextLogs });
 
     return logRecord;
