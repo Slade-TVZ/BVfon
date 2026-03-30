@@ -1,5 +1,9 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v6";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v7";
+  const VISUAL_SCROLL_DELAY_MS = 550;
+  const VISUAL_FIELD_DELAY_MS = 300;
+  const TOTAL_OVERLAY_DURATION_MS = 8000;
+  const SAVE_DELAY_AFTER_TOTALS_MS = 5500;
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -164,7 +168,7 @@
       const lineItemResults = await applyLineItemRules(extractedRows);
       const lineItemMatch = await findMatchingLineItem(extractedRows);
       const totalDifferenceResult = await compareSourceAndDestinationTotals(extractionMeta);
-      await sleep(2500);
+      await sleep(SAVE_DELAY_AFTER_TOTALS_MS);
       const saveResult = await saveCurrentDocument();
 
       await InvoiceLogger.logEvent("info", "destination-content", "fill-completed", {
@@ -412,6 +416,7 @@
       };
     }
 
+    await revealElement(saveButton, "Spremi dokument");
     emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
     InvoiceLogger.showStatusOverlay("Saving document", "info");
     saveButton.click();
@@ -426,12 +431,16 @@
     await sleep(350);
 
     const sourceTotalNet = Number(extractionMeta?.sourceTotalNet || 0);
-    const destinationTotalNet = await readDestinationNetTotal();
+    const totalField = await findDestinationNetTotalField();
+    await revealElement(totalField, "Ukupni iznos bez PDV-a");
+    const destinationTotalNet = parseLocaleNumber(totalField?.value || totalField?.textContent || "");
     const difference = roundCurrency(destinationTotalNet - sourceTotalNet);
     const message = `Razlika iznosa: ocekivano 0, dobiveno ${formatLocaleAmount(difference)}`;
     const level = areNumbersClose(difference, 0) ? "success" : "warn";
 
-    InvoiceLogger.showStatusOverlay(message, level, 4500);
+    InvoiceLogger.showStatusOverlay(message, level, TOTAL_OVERLAY_DURATION_MS, {
+      position: "center"
+    });
     await InvoiceLogger.logEvent("info", "destination-content", "total-difference-checked", {
       sourceTotalNet,
       destinationTotalNet,
@@ -446,12 +455,11 @@
     };
   }
 
-  async function readDestinationNetTotal() {
-    const totalField =
+  async function findDestinationNetTotalField() {
+    return (
       (await waitForEditableField(DESTINATION_CONFIG.totals.taxExclusiveAmount, [], 2500)) ||
-      (await waitForEditableField(DESTINATION_CONFIG.totals.lineExtensionAmount, [], 2500));
-
-    return parseLocaleNumber(totalField?.value || totalField?.textContent || "");
+      (await waitForEditableField(DESTINATION_CONFIG.totals.lineExtensionAmount, [], 2500))
+    );
   }
 
   async function seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta) {
@@ -516,7 +524,9 @@
       return null;
     }
 
+    await revealElement(element, eventName);
     writeValue(element, value);
+    await sleep(VISUAL_FIELD_DELAY_MS);
     await InvoiceLogger.logEvent("info", "destination-content", "destination-field-updated", {
       selector,
       eventName,
@@ -542,8 +552,11 @@
       referenceDate?.to ||
       new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 0);
 
+    await revealElement(inputs[0], "Obracunsko razdoblje");
     writeValue(inputs[0], formatCroatianDate(startDate, false));
+    await sleep(VISUAL_FIELD_DELAY_MS);
     writeValue(inputs[1], formatCroatianDate(endDate, false));
+    await sleep(VISUAL_FIELD_DELAY_MS);
 
     await InvoiceLogger.logEvent("info", "destination-content", "invoice-period-updated", {
       from: formatCroatianDate(startDate, false),
@@ -642,6 +655,7 @@
   }
 
   async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
+    await revealElement(row, `Stavka ${destinationName}`);
     emphasizeElement(row, "rgba(217, 119, 6, 0.24)");
     const editContext = await openLineItemEditor(row, destinationName);
     if (!editContext.ok) {
@@ -649,12 +663,21 @@
     }
 
     const quantityUpdated = setEditorFieldValue(editContext, ["Kolicina"], "0");
+    if (quantityUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
     const unitPriceUpdated = setEditorFieldValue(
       editContext,
       ["Jedinicna cijena artikla", "Neto cijena artikla"],
       "0"
     );
+    if (unitPriceUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
     const netAmountUpdated = setEditorFieldValue(editContext, ["Neto iznos stavke"], "0");
+    if (netAmountUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
 
     if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-zero-fields-missing", {
@@ -703,6 +726,7 @@
       };
     }
 
+    await revealElement(row, `Stavka ${destinationName}`);
     emphasizeElement(row, "rgba(21, 94, 239, 0.22)");
     const editContext = await openLineItemEditor(row, destinationName);
     if (!editContext.ok) {
@@ -712,6 +736,9 @@
     const quantityUpdated = sourceQuantityRaw
       ? setEditorFieldValue(editContext, ["Kolicina"], normalizeNumericInput(sourceQuantityRaw))
       : false;
+    if (quantityUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
     const unitPriceUpdated = sourceUnitPriceRaw
       ? setEditorFieldValue(
           editContext,
@@ -719,6 +746,9 @@
           normalizeNumericInput(sourceUnitPriceRaw)
         )
       : false;
+    if (unitPriceUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
     const netAmountUpdated = sourceNetAmountRaw
       ? setEditorFieldValue(
           editContext,
@@ -726,6 +756,9 @@
           normalizeNumericInput(sourceNetAmountRaw)
         )
       : false;
+    if (netAmountUpdated) {
+      await sleep(VISUAL_FIELD_DELAY_MS);
+    }
 
     if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-update-fields-missing", {
@@ -807,6 +840,7 @@
         };
       }
 
+      await revealElement(row, `Urednik stavke ${destinationName}`);
       return {
         ok: true,
         mode: "inline",
@@ -829,6 +863,7 @@
       };
     }
 
+    await revealElement(editButton, `Uredi stavku ${destinationName}`);
     editButton.click();
     await sleep(300);
 
@@ -873,6 +908,7 @@
   }
 
   async function saveLineItemEditor(editContext) {
+    await revealElement(editContext.saveButton, "Spremi stavku");
     emphasizeElement(editContext.saveButton, "rgba(34, 197, 94, 0.24)");
     editContext.saveButton.click();
     await waitForEditorToClose(editContext);
@@ -915,6 +951,7 @@
       return false;
     }
 
+    revealElementSync(field);
     writeValue(field, value);
     return true;
   }
@@ -964,6 +1001,7 @@
         continue;
       }
 
+      revealElementSync(field);
       writeValue(field, value);
       return true;
     }
@@ -1065,6 +1103,29 @@
     }
 
     element.textContent = value;
+  }
+
+  async function revealElement(element, label = "") {
+    if (!element || typeof element.scrollIntoView !== "function") {
+      return;
+    }
+
+    revealElementSync(element);
+    await InvoiceLogger.logEvent("info", "destination-content", "element-revealed", { label });
+    await sleep(VISUAL_SCROLL_DELAY_MS);
+  }
+
+  function revealElementSync(element) {
+    if (!element || typeof element.scrollIntoView !== "function") {
+      return;
+    }
+
+    element.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "nearest"
+    });
+    emphasizeElement(element, "rgba(59, 130, 246, 0.22)");
   }
 
   function setReactInputValue(element, value) {

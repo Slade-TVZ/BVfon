@@ -117,7 +117,7 @@
     return JSON.stringify(logs, null, 2);
   }
 
-  function showStatusOverlay(message, level = "info", durationMs = 3500) {
+  function showStatusOverlay(message, level = "info", durationMs = 3500, options = {}) {
     if (typeof document === "undefined" || !document.body) {
       return;
     }
@@ -140,6 +140,7 @@
       overlay.style.fontSize = "13px";
       overlay.style.lineHeight = "1.4";
       overlay.style.color = "#ffffff";
+      overlay.style.textAlign = "center";
       document.body.appendChild(overlay);
     }
 
@@ -152,6 +153,13 @@
 
     overlay.textContent = message;
     overlay.style.background = colors[level] || colors.info;
+    overlay.style.top = options.position === "center" ? "50%" : "16px";
+    overlay.style.right = options.position === "center" ? "auto" : "16px";
+    overlay.style.left = options.position === "center" ? "50%" : "auto";
+    overlay.style.transform = options.position === "center" ? "translate(-50%, -50%)" : "none";
+    overlay.style.maxWidth = options.position === "center" ? "520px" : "360px";
+    overlay.style.fontSize = options.position === "center" ? "16px" : "13px";
+    overlay.style.padding = options.position === "center" ? "18px 22px" : "12px 14px";
 
     clearTimeout(showStatusOverlay.timeoutId);
     showStatusOverlay.timeoutId = setTimeout(() => {

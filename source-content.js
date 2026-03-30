@@ -1,5 +1,5 @@
 (function () {
-  const SOURCE_SCRIPT_VERSION = "2026-03-29-source-v4";
+  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v6";
 
   if (globalThis.__invoiceHelperSourceInitialized === SOURCE_SCRIPT_VERSION) {
     return;
@@ -31,9 +31,7 @@
       ".report-generate span"
     ],
     generateButton: ".report-generate input[type='button']",
-    reportTable: "table.reportTable",
-    skipFirstBodyRow: true,
-    skipLastBodyRow: true
+    reportTable: "table.reportTable"
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -166,26 +164,27 @@
 
   async function extractRowsFromReportPage() {
     const table = mustQuery(SOURCE_CONFIG.reportTable);
-    const headers = Array.from(table.querySelectorAll("thead th")).map((cell) =>
-      normalizeCellText(cell.textContent)
-    );
+    const { headers, dataRows, totalTableRows } = getReportTableStructure(table);
 
-    let bodyRows = Array.from(table.querySelectorAll("tbody tr"));
-    if (SOURCE_CONFIG.skipFirstBodyRow && bodyRows.length > 0) {
-      bodyRows = bodyRows.slice(1);
-    }
-    if (SOURCE_CONFIG.skipLastBodyRow && bodyRows.length > 0) {
-      bodyRows = bodyRows.slice(0, -1);
-    }
-
-    const extractedRows = bodyRows
+    const extractedRows = dataRows
       .map((row) => rowToObject(row, headers))
       .filter((row) => Object.values(row).some((value) => value !== ""));
 
     await InvoiceLogger.logEvent("info", "source-content", "rows-read", {
       rowCount: extractedRows.length,
-      headers
+      headers,
+      bodyRowCount: dataRows.length,
+      totalTableRows
     });
+
+    if (!extractedRows.length) {
+      await InvoiceLogger.logEvent("warn", "source-content", "no-data-rows-found", {
+        headers,
+        totalTableRows
+      });
+      InvoiceLogger.showStatusOverlay("Nema redova za ekstrakciju", "warn");
+      throw new Error("No data rows found in source report table.");
+    }
 
     const extractionMeta = extractMetaFromReport(extractedRows);
     await validateExtractedFinancialPeriod(extractionMeta);
@@ -234,11 +233,103 @@
   }
 
   function rowToObject(row, headers) {
-    const cells = Array.from(row.querySelectorAll("td"));
+    const cells = getRowCells(row);
     return headers.reduce((accumulator, header, index) => {
       accumulator[header] = normalizeCellText(cells[index]?.textContent || "");
       return accumulator;
     }, {});
+  }
+
+  function shouldExtractBodyRow(row, headers) {
+    const cells = getRowCells(row);
+    if (!cells.length) {
+      return false;
+    }
+
+    const values = cells.map((cell) => normalizeCellText(cell.textContent || ""));
+    if (!values.some(Boolean)) {
+      return false;
+    }
+
+    const firstValue = values[0].toUpperCase();
+    if (firstValue === "UKUPNO" || firstValue.startsWith("UKUPNO ")) {
+      return false;
+    }
+
+    if (looksLikeHeaderRow(values, headers)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function getReportTableStructure(table) {
+    const allRows = Array.from(table.querySelectorAll("tr"));
+    const theadHeaderRow = Array.from(table.querySelectorAll("thead tr"))
+      .map((row) => ({ row, score: scoreHeaderRow(row) }))
+      .sort((left, right) => right.score - left.score)[0]?.row || null;
+
+    let headerRow = theadHeaderRow;
+    if (!headerRow) {
+      headerRow =
+        allRows
+          .map((row) => ({ row, score: scoreHeaderRow(row) }))
+          .filter((entry) => entry.score > 0)
+          .sort((left, right) => right.score - left.score)[0]?.row || null;
+    }
+
+    const headers = getRowCells(headerRow).map((cell) => normalizeCellText(cell.textContent));
+    const bodyRows =
+      Array.from(table.querySelectorAll("tbody tr")).filter((row) => row !== headerRow) ||
+      [];
+    const candidateRows = bodyRows.length
+      ? bodyRows
+      : allRows.filter((row) => row !== headerRow);
+
+    const dataRows = candidateRows.filter((row) => shouldExtractBodyRow(row, headers));
+
+    return {
+      headers,
+      dataRows,
+      totalTableRows: allRows.length
+    };
+  }
+
+  function scoreHeaderRow(row) {
+    const cells = getRowCells(row);
+    if (!cells.length) {
+      return 0;
+    }
+
+    const thCount = Array.from(row.children).filter((cell) => cell.tagName === "TH").length;
+    const values = cells.map((cell) => normalizeCellText(cell.textContent));
+    const textHeavyCount = values.filter((value) => {
+      return /[A-Za-z\u00C0-\u017F]/.test(value) && !/\d,\d/.test(value);
+    }).length;
+
+    return thCount * 3 + textHeavyCount;
+  }
+
+  function getRowCells(row) {
+    return row ? Array.from(row.querySelectorAll(":scope > th, :scope > td")) : [];
+  }
+
+  function looksLikeHeaderRow(values, headers) {
+    if (!headers.length) {
+      return false;
+    }
+
+    const comparableHeaders = headers.slice(0, values.length).map((header) =>
+      canonicalizeHeader(header)
+    );
+    const comparableValues = values.slice(0, comparableHeaders.length).map((value) =>
+      canonicalizeHeader(value)
+    );
+    const matchingHeaderCells = comparableValues.filter((value, index) => {
+      return value && value === comparableHeaders[index];
+    }).length;
+
+    return matchingHeaderCells >= Math.min(3, comparableHeaders.length);
   }
 
   function extractMetaFromReport(extractedRows = []) {
@@ -292,9 +383,9 @@
             return directValue;
           }
 
-          const normalizedHeader = normalizeCellText(header).toUpperCase();
+          const normalizedHeader = canonicalizeHeader(header);
           return Object.entries(row || {}).find(([key, value]) => {
-            return normalizeCellText(key).toUpperCase() === normalizedHeader && String(value || "").trim();
+            return canonicalizeHeader(key) === normalizedHeader && String(value || "").trim();
           })?.[1];
         })
         .find((value) => value != null && String(value).trim()) || ""
@@ -419,6 +510,13 @@
       .replace(/\u00a0/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function canonicalizeHeader(value) {
+    return normalizeCellText(value)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase();
   }
 
   function isHtmlModeSelected() {

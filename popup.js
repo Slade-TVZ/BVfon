@@ -30,7 +30,7 @@ async function initializePopup() {
     previewEl.textContent = "";
     logsListEl.textContent = "";
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -47,7 +47,7 @@ async function runAction(action) {
     const response = await requestAction(action);
     setStatus(response.message || "Gotovo.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -68,7 +68,7 @@ async function previewStoredData() {
     );
     setStatus(response.message || "Preview ucitan.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -80,7 +80,7 @@ async function clearStoredData() {
     previewEl.textContent = "";
     setStatus(response.message || "Podaci obrisani.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -101,7 +101,7 @@ async function refreshLogs() {
       .join("\n");
     setStatus(response.message || "Logovi ucitani.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -113,7 +113,7 @@ async function clearLogsView() {
     logsListEl.textContent = "";
     setStatus(response.message || "Logovi obrisani.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -134,7 +134,7 @@ async function exportLogsFile() {
 
     setStatus(response.message || "Logovi exportirani.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -145,7 +145,7 @@ async function updateDebugMode() {
     });
     setStatus(response.message || "Debug mode azuriran.");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
+    handlePopupError(error);
   }
 }
 
@@ -173,15 +173,31 @@ function setStatus(message, isError = false) {
 }
 
 async function requestAction(action, extra = {}) {
-  const response = await chrome.runtime.sendMessage({
-    type: "POPUP_ACTION",
-    action,
-    ...extra
-  });
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "POPUP_ACTION",
+      action,
+      ...extra
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
 
   if (!response?.ok) {
     throw new Error(response?.error || "Unknown error");
   }
 
   return response;
+}
+
+function handlePopupError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("Extension context invalidated")) {
+    setStatus("Reloadaj tab nakon reloada ekstenzije.", true);
+    return;
+  }
+
+  setStatus(message, true);
 }
