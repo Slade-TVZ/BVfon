@@ -1,5 +1,5 @@
 (function () {
-  const PANEL_VERSION = "2026-03-29-floating-panel-v3";
+  const PANEL_VERSION = "2026-03-30-floating-panel-v4";
   const PANEL_ID = "__invoice_helper_floating_panel";
   const LAUNCHER_ID = "__invoice_helper_floating_launcher";
   const SOURCE_ORGANIZATION_KEY = "sourceOrganizationName";
@@ -251,7 +251,7 @@
       const response = await requestAction(action);
       setStatus(response.message || "Gotovo.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     } finally {
       setDisabled(false);
       window.setTimeout(() => {
@@ -277,7 +277,7 @@
       );
       setStatus(response.message || "Preview ucitan.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -289,7 +289,7 @@
       preview.textContent = "";
       setStatus(response.message || "Podaci obrisani.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -310,7 +310,7 @@
         .join("\n");
       setStatus(response.message || "Logovi ucitani.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -322,7 +322,7 @@
       logs.textContent = "";
       setStatus(response.message || "Logovi obrisani.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -343,7 +343,7 @@
 
       setStatus(response.message || "Logovi exportirani.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -354,7 +354,7 @@
       });
       setStatus(response.message || "Debug mode azuriran.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      handlePanelError(error);
     }
   }
 
@@ -407,8 +407,8 @@
   function attachDragging() {
     let dragState = null;
 
-    header.addEventListener("pointerdown", (event) => {
-      if (event.target === closeBtn) {
+    panel.addEventListener("pointerdown", (event) => {
+      if (isInteractiveElement(event.target)) {
         return;
       }
 
@@ -419,11 +419,11 @@
         top: panelState.top
       };
 
-      header.setPointerCapture(event.pointerId);
+      panel.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
 
-    header.addEventListener("pointermove", (event) => {
+    panel.addEventListener("pointermove", (event) => {
       if (!dragState) {
         return;
       }
@@ -433,12 +433,12 @@
       clampAndApplyPosition(nextLeft, nextTop);
     });
 
-    header.addEventListener("pointerup", async () => {
+    panel.addEventListener("pointerup", async () => {
       dragState = null;
       await persistPanelState().catch(() => {});
     });
 
-    header.addEventListener("pointercancel", async () => {
+    panel.addEventListener("pointercancel", async () => {
       dragState = null;
       await persistPanelState().catch(() => {});
     });
@@ -458,17 +458,42 @@
   }
 
   async function requestAction(action, extra = {}) {
-    const response = await chrome.runtime.sendMessage({
-      type: "POPUP_ACTION",
-      action,
-      ...extra
-    });
+    let response;
+
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "POPUP_ACTION",
+        action,
+        ...extra
+      });
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
 
     if (!response?.ok) {
       throw new Error(response?.error || "Unknown error");
     }
 
     return response;
+  }
+
+  function handlePanelError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Extension context invalidated")) {
+      setStatus("Reloadaj tab nakon reloada ekstenzije.", true);
+      setDisabled(true);
+      return;
+    }
+
+    setStatus(message, true);
+  }
+
+  function isInteractiveElement(target) {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    return Boolean(target.closest("button, input, textarea, select, label, a"));
   }
 
   function formatDetails(details) {
