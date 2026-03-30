@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Invoice Helper",
+  "version": "0.3.0",
+  "description": "Manifest V3 Chrome extension with compact controls for extract/fill workflow.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Invoice Helper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "floating-panel.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,9 +1,7 @@
 (function () {
-  const PANEL_VERSION = "2026-03-29-floating-panel-v3";
+  const PANEL_VERSION = "2026-03-29-floating-panel-v2";
   const PANEL_ID = "__invoice_helper_floating_panel";
-  const LAUNCHER_ID = "__invoice_helper_floating_launcher";
   const SOURCE_ORGANIZATION_KEY = "sourceOrganizationName";
-  const PANEL_STATE_KEY = "floatingPanelState";
 
   if (globalThis.__invoiceHelperFloatingPanelInitialized === PANEL_VERSION) {
     return;
@@ -14,17 +12,7 @@
     return;
   }
 
-  let panelState = {
-    visible: true,
-    left: 16,
-    top: 16
-  };
-
   const panel = document.createElement("div");
-  const launcher = document.createElement("button");
-  const header = document.createElement("div");
-  const title = document.createElement("div");
-  const closeBtn = document.createElement("button");
   const actions = document.createElement("div");
   const advancedSection = document.createElement("div");
   const extractBtn = createButton("Ucitaj");
@@ -42,12 +30,12 @@
   const logs = document.createElement("div");
 
   panel.id = PANEL_ID;
-  panel.setAttribute("aria-label", "Invoice Helper floating window");
+  panel.setAttribute("aria-label", "Invoice Helper controls");
   panel.style.position = "fixed";
-  panel.style.left = "16px";
   panel.style.top = "16px";
+  panel.style.left = "16px";
   panel.style.zIndex = "2147483646";
-  panel.style.width = "186px";
+  panel.style.width = "168px";
   panel.style.padding = "10px";
   panel.style.borderRadius = "14px";
   panel.style.background = "rgba(255, 255, 255, 0.96)";
@@ -57,48 +45,6 @@
   panel.style.fontFamily = "Segoe UI, Arial, sans-serif";
   panel.style.display = "grid";
   panel.style.gap = "8px";
-  panel.style.userSelect = "none";
-
-  launcher.id = LAUNCHER_ID;
-  launcher.type = "button";
-  launcher.textContent = "Invoice Helper";
-  launcher.style.position = "fixed";
-  launcher.style.left = "16px";
-  launcher.style.top = "16px";
-  launcher.style.zIndex = "2147483645";
-  launcher.style.display = "none";
-  launcher.style.border = "0";
-  launcher.style.borderRadius = "999px";
-  launcher.style.padding = "9px 12px";
-  launcher.style.background = "#155eef";
-  launcher.style.color = "#ffffff";
-  launcher.style.fontSize = "12px";
-  launcher.style.fontWeight = "700";
-  launcher.style.cursor = "pointer";
-  launcher.style.boxShadow = "0 12px 28px rgba(20, 44, 74, 0.16)";
-
-  header.style.display = "flex";
-  header.style.alignItems = "center";
-  header.style.justifyContent = "space-between";
-  header.style.gap = "8px";
-  header.style.cursor = "move";
-  header.style.padding = "2px 0 4px";
-
-  title.textContent = "Invoice Helper";
-  title.style.fontSize = "12px";
-  title.style.fontWeight = "700";
-  title.style.color = "#17324d";
-
-  closeBtn.type = "button";
-  closeBtn.textContent = "X";
-  closeBtn.style.border = "0";
-  closeBtn.style.borderRadius = "8px";
-  closeBtn.style.padding = "4px 7px";
-  closeBtn.style.background = "#e9f1fb";
-  closeBtn.style.color = "#17324d";
-  closeBtn.style.fontSize = "11px";
-  closeBtn.style.fontWeight = "700";
-  closeBtn.style.cursor = "pointer";
 
   actions.style.display = "grid";
   actions.style.gridTemplateColumns = "1fr 1fr auto";
@@ -126,7 +72,6 @@
   sourceOrganizationInput.style.borderRadius = "10px";
   sourceOrganizationInput.style.padding = "8px 10px";
   sourceOrganizationInput.style.fontSize = "12px";
-  sourceOrganizationInput.style.userSelect = "text";
 
   const sourceLabel = createLabel("Source organization", sourceOrganizationInput);
   const debugRow = document.createElement("label");
@@ -169,7 +114,6 @@
   preview.style.whiteSpace = "pre-wrap";
   preview.style.wordBreak = "break-word";
   preview.style.background = "#fbfdff";
-  preview.style.userSelect = "text";
 
   logs.style.maxHeight = "150px";
   logs.style.overflow = "auto";
@@ -180,7 +124,6 @@
   logs.style.whiteSpace = "pre-wrap";
   logs.style.wordBreak = "break-word";
   logs.style.background = "#fbfdff";
-  logs.style.userSelect = "text";
 
   extractBtn.addEventListener("click", () => runAction("extract"));
   fillBtn.addEventListener("click", () => runAction("fill"));
@@ -191,15 +134,10 @@
   clearLogsBtn.addEventListener("click", clearLogsView);
   exportLogsBtn.addEventListener("click", exportLogsFile);
   debugToggle.addEventListener("change", updateDebugMode);
-  closeBtn.addEventListener("click", closePanel);
-  launcher.addEventListener("click", openPanel);
 
-  header.appendChild(title);
-  header.appendChild(closeBtn);
   actions.appendChild(extractBtn);
   actions.appendChild(fillBtn);
   actions.appendChild(toggleAdvancedBtn);
-  panel.appendChild(header);
   panel.appendChild(actions);
   panel.appendChild(status);
   advancedSection.appendChild(sourceLabel);
@@ -211,35 +149,16 @@
   advancedSection.appendChild(logs);
   panel.appendChild(advancedSection);
   document.body.appendChild(panel);
-  document.body.appendChild(launcher);
 
   initializePanel().catch((error) => {
     setStatus(error instanceof Error ? error.message : String(error), true);
   });
 
   async function initializePanel() {
-    const stored = await chrome.storage.local.get([SOURCE_ORGANIZATION_KEY, PANEL_STATE_KEY]);
+    const stored = await chrome.storage.local.get([SOURCE_ORGANIZATION_KEY]);
     sourceOrganizationInput.value = stored[SOURCE_ORGANIZATION_KEY] || "";
     const debugMode = await requestAction("getDebugMode");
     debugToggle.checked = Boolean(debugMode.enabled);
-
-    const savedState = stored[PANEL_STATE_KEY];
-    if (savedState && typeof savedState === "object") {
-      panelState = {
-        visible: savedState.visible !== false,
-        left: Number.isFinite(savedState.left) ? savedState.left : 16,
-        top: Number.isFinite(savedState.top) ? savedState.top : 16
-      };
-    }
-
-    clampAndApplyPosition(panelState.left, panelState.top);
-    attachDragging();
-
-    if (panelState.visible) {
-      showPanel();
-    } else {
-      hidePanel();
-    }
   }
 
   async function runAction(action) {
@@ -368,93 +287,6 @@
     await chrome.storage.local.set({
       [SOURCE_ORGANIZATION_KEY]: sourceOrganizationInput.value.trim()
     });
-  }
-
-  async function persistPanelState() {
-    await chrome.storage.local.set({
-      [PANEL_STATE_KEY]: {
-        visible: panelState.visible,
-        left: panelState.left,
-        top: panelState.top
-      }
-    });
-  }
-
-  function openPanel() {
-    panelState.visible = true;
-    showPanel();
-    persistPanelState().catch(() => {});
-  }
-
-  function closePanel() {
-    panelState.visible = false;
-    hidePanel();
-    persistPanelState().catch(() => {});
-  }
-
-  function showPanel() {
-    panel.style.display = "grid";
-    launcher.style.display = "none";
-  }
-
-  function hidePanel() {
-    panel.style.display = "none";
-    launcher.style.display = "block";
-    launcher.style.left = `${panelState.left}px`;
-    launcher.style.top = `${panelState.top}px`;
-  }
-
-  function attachDragging() {
-    let dragState = null;
-
-    header.addEventListener("pointerdown", (event) => {
-      if (event.target === closeBtn) {
-        return;
-      }
-
-      dragState = {
-        startX: event.clientX,
-        startY: event.clientY,
-        left: panelState.left,
-        top: panelState.top
-      };
-
-      header.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    });
-
-    header.addEventListener("pointermove", (event) => {
-      if (!dragState) {
-        return;
-      }
-
-      const nextLeft = dragState.left + (event.clientX - dragState.startX);
-      const nextTop = dragState.top + (event.clientY - dragState.startY);
-      clampAndApplyPosition(nextLeft, nextTop);
-    });
-
-    header.addEventListener("pointerup", async () => {
-      dragState = null;
-      await persistPanelState().catch(() => {});
-    });
-
-    header.addEventListener("pointercancel", async () => {
-      dragState = null;
-      await persistPanelState().catch(() => {});
-    });
-  }
-
-  function clampAndApplyPosition(left, top) {
-    const maxLeft = Math.max(8, window.innerWidth - panel.offsetWidth - 8);
-    const maxTop = Math.max(8, window.innerHeight - 48);
-
-    panelState.left = Math.min(Math.max(8, Math.round(left)), maxLeft);
-    panelState.top = Math.min(Math.max(8, Math.round(top)), maxTop);
-
-    panel.style.left = `${panelState.left}px`;
-    panel.style.top = `${panelState.top}px`;
-    launcher.style.left = `${panelState.left}px`;
-    launcher.style.top = `${panelState.top}px`;
   }
 
   async function requestAction(action, extra = {}) {

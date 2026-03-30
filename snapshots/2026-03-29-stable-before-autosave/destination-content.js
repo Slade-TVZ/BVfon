@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v6";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-29-destination-v5";
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -25,11 +25,6 @@
       'button[data-action="copy-document"]',
       'button[data-testid="create-from-document"]'
     ],
-    saveDocumentSelectors: [
-      ".nav-action-button",
-      'button[data-testid="save-document"]',
-      "button.ant-btn.ant-btn-primary"
-    ],
     detailInvoiceNumberField: "#formaPodaciDokument_iD",
     editableDocumentSelectors: {
       invoiceNumber: "#formaPodaciDokument_iD",
@@ -49,11 +44,6 @@
       paymentNote: ["Opis placanja"],
       paymentModel: ["Model i poziv na broj"],
       paymentReferenceNumber: ["Model i poziv na broj"]
-    },
-    totals: {
-      taxExclusiveAmount: "#formaUkupniIznosi_taxExclusiveAmount",
-      lineExtensionAmount: "#formaUkupniIznosi_lineExtensionAmount",
-      payableAmount: "#formaUkupniIznosi_payableAmount"
     },
     lineItems: {
       rows: "#specifikacijaStavke .ant-table-tbody tr.ant-table-row",
@@ -163,25 +153,20 @@
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
       const lineItemMatch = await findMatchingLineItem(extractedRows);
-      const totalDifferenceResult = await compareSourceAndDestinationTotals(extractionMeta);
-      await sleep(2500);
-      const saveResult = await saveCurrentDocument();
 
       await InvoiceLogger.logEvent("info", "destination-content", "fill-completed", {
         fieldResults,
         lineItemResults,
-        lineItemMatch,
-        totalDifferenceResult,
-        saveResult
+        lineItemMatch
       });
+      InvoiceLogger.showStatusOverlay("Fill completed", "success");
+
       return {
-        message: "Destination form updated and saved.",
+        message: "Destination form updated.",
         extractionMeta,
         fieldResults,
         lineItemResults,
-        lineItemMatch,
-        totalDifferenceResult,
-        saveResult
+        lineItemMatch
       };
     }
 
@@ -392,68 +377,6 @@
     }) || null;
   }
 
-  function findSaveDocumentButton() {
-    const candidates = DESTINATION_CONFIG.saveDocumentSelectors.flatMap((selector) =>
-      Array.from(document.querySelectorAll(selector))
-    );
-
-    return candidates.find((button) => {
-      const text = normalizeText(button?.textContent || "");
-      return text.includes("SPREMI DOKUMENT");
-    }) || null;
-  }
-
-  async function saveCurrentDocument() {
-    const saveButton = findSaveDocumentButton();
-    if (!saveButton || saveButton.disabled) {
-      await InvoiceLogger.logEvent("warn", "destination-content", "save-document-button-missing", "");
-      return {
-        type: "save-button-missing"
-      };
-    }
-
-    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
-    InvoiceLogger.showStatusOverlay("Saving document", "info");
-    saveButton.click();
-    await InvoiceLogger.logEvent("info", "destination-content", "save-document-clicked", "");
-
-    return {
-      type: "save-clicked"
-    };
-  }
-
-  async function compareSourceAndDestinationTotals(extractionMeta) {
-    await sleep(350);
-
-    const sourceTotalNet = Number(extractionMeta?.sourceTotalNet || 0);
-    const destinationTotalNet = await readDestinationNetTotal();
-    const difference = roundCurrency(destinationTotalNet - sourceTotalNet);
-    const message = `Razlika iznosa: ocekivano 0, dobiveno ${formatLocaleAmount(difference)}`;
-    const level = areNumbersClose(difference, 0) ? "success" : "warn";
-
-    InvoiceLogger.showStatusOverlay(message, level, 4500);
-    await InvoiceLogger.logEvent("info", "destination-content", "total-difference-checked", {
-      sourceTotalNet,
-      destinationTotalNet,
-      difference
-    });
-
-    return {
-      sourceTotalNet,
-      destinationTotalNet,
-      difference,
-      message
-    };
-  }
-
-  async function readDestinationNetTotal() {
-    const totalField =
-      (await waitForEditableField(DESTINATION_CONFIG.totals.taxExclusiveAmount, [], 2500)) ||
-      (await waitForEditableField(DESTINATION_CONFIG.totals.lineExtensionAmount, [], 2500));
-
-    return parseLocaleNumber(totalField?.value || totalField?.textContent || "");
-  }
-
   async function seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta) {
     const selectors = DESTINATION_CONFIG.editableDocumentSelectors;
     const labels = DESTINATION_CONFIG.editableDocumentLabels;
@@ -586,21 +509,40 @@
   }
 
   async function applyLineItemRules(extractedRows) {
-    const sourceRowsByName = groupSourceRowsByName(extractedRows);
-    const destinationRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows));
+    const sourceRowsByName = new Map(
+      extractedRows
+        .map((row) => {
+          const name = normalizeText(getSourceLineItemName(row));
+          return name ? [name, row] : null;
+        })
+        .filter(Boolean)
+    );
+    const destinationNames = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows))
+      .map((row) => row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "")
+      .filter(Boolean);
     const results = [];
 
-    for (const row of destinationRows) {
-      const destinationName =
-        row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
+    for (const destinationName of destinationNames) {
       const normalizedDestinationName = normalizeText(destinationName);
       if (!normalizedDestinationName) {
         continue;
       }
 
-      const matchingSourceRows = sourceRowsByName.get(normalizedDestinationName) || [];
-      if (matchingSourceRows.length > 0) {
-        const updateResult = await updateDestinationLineItem(row, destinationName, matchingSourceRows.shift());
+      const row = findDestinationRowByNormalizedName(normalizedDestinationName);
+      if (!row) {
+        results.push({
+          type: "destination-row-missing",
+          destinationName
+        });
+        continue;
+      }
+
+      if (sourceRowsByName.has(normalizedDestinationName)) {
+        const updateResult = await updateDestinationLineItem(
+          row,
+          destinationName,
+          sourceRowsByName.get(normalizedDestinationName)
+        );
         results.push(updateResult);
         continue;
       }
@@ -620,25 +562,6 @@
 
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-rules-applied", results);
     return results;
-  }
-
-  function groupSourceRowsByName(extractedRows) {
-    const groups = new Map();
-
-    for (const row of extractedRows) {
-      const name = normalizeText(getSourceLineItemName(row));
-      if (!name) {
-        continue;
-      }
-
-      if (!groups.has(name)) {
-        groups.set(name, []);
-      }
-
-      groups.get(name).push(row);
-    }
-
-    return groups;
   }
 
   async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
@@ -1174,16 +1097,6 @@
       .replace(/[^\d.-]/g, "");
 
     return Number.parseFloat(normalized) || 0;
-  }
-
-  function roundCurrency(value) {
-    return Math.round((Number(value) || 0) * 100) / 100;
-  }
-
-  function formatLocaleAmount(value) {
-    const numeric = Number(value) || 0;
-    const prefix = numeric < 0 ? "-" : "";
-    return `${prefix}${Math.abs(numeric).toFixed(2).replace(".", ",")}`;
   }
 
   function areNumbersClose(left, right) {

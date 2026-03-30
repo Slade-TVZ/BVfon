@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="hr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Helper</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7faff;
+        --panel: #ffffff;
+        --text: #17324d;
+        --muted: #5f7389;
+        --border: #d8e2ee;
+        --primary: #155eef;
+        --danger: #c62828;
+      }
+
+      body {
+        margin: 0;
+        width: 340px;
+        background: var(--bg);
+        font-family: "Segoe UI", Arial, sans-serif;
+        color: var(--text);
+      }
+
+      .wrap {
+        padding: 10px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 10px;
+        box-shadow: 0 12px 30px rgba(20, 44, 74, 0.1);
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      button,
+      input,
+      select {
+        font-family: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        background: var(--primary);
+        color: #fff;
+      }
+
+      button.secondary {
+        background: #e9f1fb;
+        color: var(--text);
+      }
+
+      button.danger {
+        background: #fdeceb;
+        color: var(--danger);
+      }
+
+      button.mini {
+        padding: 8px 10px;
+        font-size: 12px;
+      }
+
+      .advanced {
+        display: none;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
+
+      .advanced.open {
+        display: block;
+      }
+
+      .field + .field,
+      .toolbar,
+      .preview,
+      .logs {
+        margin-top: 10px;
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      input[type="text"],
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 10px;
+        font-size: 12px;
+      }
+
+      .toolbar {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .toolbar.triple {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #f8fbff;
+        font-size: 12px;
+      }
+
+      .preview,
+      .logs {
+        max-height: 180px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px;
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #fbfdff;
+      }
+
+      .logs:empty::before,
+      .preview:empty::before {
+        content: "Nema podataka.";
+        color: var(--muted);
+      }
+
+      #status {
+        min-height: 16px;
+        margin-top: 8px;
+        font-size: 11px;
+        line-height: 1.35;
+        color: var(--muted);
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="actions">
+          <button id="extractBtn">Ucitaj</button>
+          <button id="fillBtn">Upisi</button>
+          <button id="toggleAdvancedBtn" class="secondary mini">Opcije</button>
+        </div>
+        <div id="status"></div>
+
+        <div id="advancedSection" class="advanced">
+          <div class="field">
+            <label class="label" for="sourceOrganizationInput">Source organization</label>
+            <input id="sourceOrganizationInput" type="text" placeholder="npr. Zatvor u Karlovcu (309)">
+          </div>
+
+          <div class="field">
+            <div class="toggle">
+              <span>Debug mode</span>
+              <input id="debugModeToggle" type="checkbox">
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <button id="previewBtn" class="secondary mini">Preview</button>
+            <button id="clearDataBtn" class="danger mini">Obrisi data</button>
+          </div>
+
+          <div class="toolbar triple">
+            <button id="refreshLogsBtn" class="secondary mini">Logovi</button>
+            <button id="clearLogsBtn" class="danger mini">Obrisi log</button>
+            <button id="exportLogsBtn" class="secondary mini">Export</button>
+          </div>
+
+          <div id="preview" class="preview"></div>
+          <div id="logsList" class="logs"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

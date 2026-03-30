@@ -187,7 +187,7 @@
       headers
     });
 
-    const extractionMeta = extractMetaFromReport(extractedRows);
+    const extractionMeta = extractMetaFromReport();
     await validateExtractedFinancialPeriod(extractionMeta);
     await InvoiceLogger.logEvent("info", "source-content", "saving-extracted-data", {
       rowCount: extractedRows.length,
@@ -241,7 +241,7 @@
     }, {});
   }
 
-  function extractMetaFromReport(extractedRows = []) {
+  function extractMetaFromReport() {
     const filters = Array.from(document.querySelectorAll(".filterDisplay")).reduce(
       (accumulator, filterNode) => {
         const label = normalizeCellText(
@@ -260,58 +260,13 @@
     );
 
     const organization = filters["Organizacija"] || "";
-    const sourceTotalNet = calculateSourceTotalNet(extractedRows);
 
     return {
       extractedAt: new Date().toISOString(),
       organization,
       organizationSearchName: normalizeOrganizationName(organization),
-      financialPeriod: filters["Financijsko razdoblje"] || "",
-      sourceTotalNet,
-      sourceTotalNetDisplay: formatLocaleAmount(sourceTotalNet)
+      financialPeriod: filters["Financijsko razdoblje"] || ""
     };
-  }
-
-  function calculateSourceTotalNet(extractedRows) {
-    return extractedRows.reduce((sum, row) => {
-      return (
-        sum +
-        parseLocaleNumber(
-          getRowFieldValue(row, ["Potrosnja zatvorenika", "Neto iznos stavke", "Iznos", "Ukupno"])
-        )
-      );
-    }, 0);
-  }
-
-  function getRowFieldValue(row, candidateHeaders) {
-    return (
-      candidateHeaders
-        .map((header) => {
-          const directValue = row?.[header];
-          if (directValue != null && String(directValue).trim()) {
-            return directValue;
-          }
-
-          const normalizedHeader = normalizeCellText(header).toUpperCase();
-          return Object.entries(row || {}).find(([key, value]) => {
-            return normalizeCellText(key).toUpperCase() === normalizedHeader && String(value || "").trim();
-          })?.[1];
-        })
-        .find((value) => value != null && String(value).trim()) || ""
-    );
-  }
-
-  function parseLocaleNumber(value) {
-    const normalized = String(value || "")
-      .replace(/\./g, "")
-      .replace(",", ".")
-      .replace(/[^\d.-]/g, "");
-
-    return Number.parseFloat(normalized) || 0;
-  }
-
-  function formatLocaleAmount(value) {
-    return (Number(value) || 0).toFixed(2).replace(".", ",");
   }
 
   function findPreviousMonthOption(select) {

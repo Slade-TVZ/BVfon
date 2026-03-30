@@ -117,7 +117,7 @@
     return JSON.stringify(logs, null, 2);
   }
 
-  function showStatusOverlay(message, level = "info", durationMs = 3500) {
+  function showStatusOverlay(message, level = "info") {
     if (typeof document === "undefined" || !document.body) {
       return;
     }
@@ -156,7 +156,7 @@
     clearTimeout(showStatusOverlay.timeoutId);
     showStatusOverlay.timeoutId = setTimeout(() => {
       overlay.remove();
-    }, Math.max(250, Number(durationMs) || 3500));
+    }, 3500);
   }
 
   globalThis.InvoiceLogger = {
