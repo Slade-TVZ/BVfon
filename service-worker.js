@@ -14,10 +14,12 @@ initializeServiceWorker();
 
 chrome.runtime.onInstalled.addListener(() => {
   initializeServiceWorker();
+  refreshFloatingPanelsOnOpenTabs().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   initializeServiceWorker();
+  refreshFloatingPanelsOnOpenTabs().catch(() => {});
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -105,6 +107,8 @@ async function handlePopupAction(message) {
   await InvoiceLogger.logEvent("info", "service-worker", "popup-action-received", { action });
 
   switch (action) {
+    case "syncFloatingPanel":
+      return syncFloatingPanelOnActiveTab();
     case "extract":
       return sendActionToActiveTab("EXTRACT_DATA", ["logger.js", "source-content.js"]);
     case "fill":
@@ -150,6 +154,8 @@ async function sendActionToActiveTab(type, filesToInject) {
     throw new Error("No active tab found.");
   }
 
+  await refreshFloatingPanelInTab(tab.id).catch(() => {});
+
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: filesToInject
@@ -162,6 +168,60 @@ async function sendActionToActiveTab(type, filesToInject) {
 
   const response = await chrome.tabs.sendMessage(tab.id, { type });
   return response || { message: "Action sent." };
+}
+
+async function syncFloatingPanelOnActiveTab() {
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true
+  });
+
+  if (!tab?.id) {
+    return { message: "No active tab found for floating panel sync." };
+  }
+
+  await refreshFloatingPanelInTab(tab.id);
+  await InvoiceLogger.logEvent("info", "service-worker", "floating-panel-synced", {
+    tabId: tab.id
+  });
+
+  return { message: "Floating panel synced." };
+}
+
+async function refreshFloatingPanelsOnOpenTabs() {
+  const tabs = await chrome.tabs.query({});
+
+  for (const tab of tabs) {
+    if (!tab?.id || !isInjectableUrl(tab.url)) {
+      continue;
+    }
+
+    await refreshFloatingPanelInTab(tab.id).catch(() => {});
+  }
+}
+
+async function refreshFloatingPanelInTab(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      document.getElementById("__invoice_helper_floating_panel")?.remove();
+      document.getElementById("__invoice_helper_floating_launcher")?.remove();
+      try {
+        delete globalThis.__invoiceHelperFloatingPanelInitialized;
+      } catch (_error) {
+        globalThis.__invoiceHelperFloatingPanelInitialized = undefined;
+      }
+    }
+  });
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["floating-panel.js"]
+  });
+}
+
+function isInjectableUrl(url) {
+  return /^https?:/i.test(String(url || ""));
 }
 
 async function previewStoredData() {

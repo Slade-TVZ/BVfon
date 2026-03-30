@@ -1,5 +1,6 @@
 (function () {
-  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v6";
+  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v7";
+  const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
 
   if (globalThis.__invoiceHelperSourceInitialized === SOURCE_SCRIPT_VERSION) {
     return;
@@ -76,7 +77,10 @@
     }
 
     if (document.querySelector(SOURCE_CONFIG.formSelector)) {
-      await prepareGenerationForm();
+      const prepareResult = await prepareGenerationForm();
+      if (prepareResult?.cancelled) {
+        return prepareResult;
+      }
       return {
         message: "Financial period set to previous month. Extraction will run after report loads."
       };
@@ -90,7 +94,8 @@
 
   async function autoExtractIfPending() {
     const storage = await safeGet([STORAGE_KEYS.pendingExtraction]);
-    if (!storage[STORAGE_KEYS.pendingExtraction]) {
+    const pendingExtraction = storage[STORAGE_KEYS.pendingExtraction];
+    if (!pendingExtraction) {
       return { message: "No pending extraction." };
     }
 
@@ -100,7 +105,7 @@
     }
 
     await InvoiceLogger.logEvent("info", "source-content", "auto-extract-triggered", "");
-    return extractRowsFromReportPage();
+    return extractRowsFromReportPage(pendingExtraction);
   }
 
   async function prepareGenerationForm() {
@@ -133,6 +138,18 @@
       throw new Error("Organizational unit must be selected by the user.");
     }
 
+    const restrictedCheck = await confirmRestrictedOrganizationAction(
+      orgPresentationInput.value.trim() || orgPresentationInput.getAttribute("title") || "",
+      "generiranje izvjestaja"
+    );
+    if (!restrictedCheck.allowed) {
+      return {
+        message: restrictedCheck.message,
+        cancelled: true,
+        restrictedCheck
+      };
+    }
+
     await ensureHtmlModeSelected();
 
     if (!isHtmlModeSelected()) {
@@ -149,7 +166,8 @@
       [STORAGE_KEYS.pendingExtraction]: {
         startedAt: new Date().toISOString(),
         organizationName: orgPresentationInput.value.trim(),
-        expectedFinancialPeriod: normalizeCellText(previousMonthOption.textContent)
+        expectedFinancialPeriod: normalizeCellText(previousMonthOption.textContent),
+        restrictedOrganizationConfirmed: restrictedCheck.confirmed
       }
     });
 
@@ -162,7 +180,7 @@
     await InvoiceLogger.logEvent("info", "source-content", "generate-clicked", "");
   }
 
-  async function extractRowsFromReportPage() {
+  async function extractRowsFromReportPage(pendingExtraction = null) {
     const table = mustQuery(SOURCE_CONFIG.reportTable);
     const { headers, dataRows, totalTableRows } = getReportTableStructure(table);
 
@@ -187,6 +205,20 @@
     }
 
     const extractionMeta = extractMetaFromReport(extractedRows);
+    const restrictedCheck = await confirmRestrictedOrganizationAction(
+      extractionMeta.organization || extractionMeta.organizationSearchName || "",
+      "ekstrakciju izvjestaja",
+      pendingExtraction?.restrictedOrganizationConfirmed === true
+    );
+    if (!restrictedCheck.allowed) {
+      return {
+        message: restrictedCheck.message,
+        rows: [],
+        meta: extractionMeta,
+        cancelled: true,
+        restrictedCheck
+      };
+    }
     await validateExtractedFinancialPeriod(extractionMeta);
     await InvoiceLogger.logEvent("info", "source-content", "saving-extracted-data", {
       rowCount: extractedRows.length,
@@ -209,6 +241,54 @@
       rows: extractedRows,
       meta: extractionMeta
     };
+  }
+
+  async function confirmRestrictedOrganizationAction(organizationName, actionLabel, alreadyConfirmed = false) {
+    if (!isRestrictedOrganization(organizationName)) {
+      return {
+        allowed: true,
+        confirmed: false
+      };
+    }
+
+    if (alreadyConfirmed) {
+      return {
+        allowed: true,
+        confirmed: true
+      };
+    }
+
+    const message = `Upozorenje: organizacija je ${RESTRICTED_ORGANIZATION_NAME}. Zelis li zaista nastaviti za ${actionLabel}?`;
+    const confirmed = window.confirm(message);
+
+    await InvoiceLogger.logEvent("warn", "source-content", "restricted-organization-confirmation", {
+      organizationName,
+      actionLabel,
+      confirmed
+    });
+
+    if (!confirmed) {
+      const cancelMessage = `Akcija je otkazana za ${RESTRICTED_ORGANIZATION_NAME}.`;
+      InvoiceLogger.showStatusOverlay(cancelMessage, "warn", 7000, { position: "center" });
+      return {
+        allowed: false,
+        confirmed: false,
+        message: cancelMessage
+      };
+    }
+
+    return {
+      allowed: true,
+      confirmed: true
+    };
+  }
+
+  function isRestrictedOrganization(value) {
+    const normalized = canonicalizeOrganizationValue(value);
+    return (
+      normalized === canonicalizeOrganizationValue(RESTRICTED_ORGANIZATION_NAME) ||
+      normalized === canonicalizeOrganizationValue("Zatvor u Sisku")
+    );
   }
 
   async function validateExtractedFinancialPeriod(extractionMeta) {
@@ -437,6 +517,13 @@
       .replace(/\(\d+\)/g, "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function canonicalizeOrganizationValue(value) {
+    return normalizeCellText(value)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase();
   }
 
   async function ensureOrganizationSelected(desiredOrganization, orgPresentationInput, orgHiddenInput) {

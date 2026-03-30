@@ -1,5 +1,5 @@
 (function () {
-  const PANEL_VERSION = "2026-03-30-floating-panel-v4";
+  const PANEL_VERSION = "2026-03-30-floating-panel-v5";
   const PANEL_ID = "__invoice_helper_floating_panel";
   const LAUNCHER_ID = "__invoice_helper_floating_launcher";
   const SOURCE_ORGANIZATION_KEY = "sourceOrganizationName";

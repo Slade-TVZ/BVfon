@@ -21,6 +21,7 @@ initializePopup();
 
 async function initializePopup() {
   try {
+    await syncFloatingPanelSilently();
     const stored = await chrome.storage.local.get([SOURCE_ORGANIZATION_KEY]);
     sourceOrganizationInputEl.value = stored[SOURCE_ORGANIZATION_KEY] || "";
 
@@ -31,6 +32,14 @@ async function initializePopup() {
     logsListEl.textContent = "";
   } catch (error) {
     handlePopupError(error);
+  }
+}
+
+async function syncFloatingPanelSilently() {
+  try {
+    await requestAction("syncFloatingPanel");
+  } catch (_error) {
+    // Popup should still work even if the active tab does not allow injection.
   }
 }
 

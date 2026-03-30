@@ -1,8 +1,10 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v7";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v11";
+  const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
   const VISUAL_SCROLL_DELAY_MS = 550;
   const VISUAL_FIELD_DELAY_MS = 300;
   const TOTAL_OVERLAY_DURATION_MS = 8000;
+  const TOTAL_MISMATCH_OVERLAY_DURATION_MS = 5000;
   const SAVE_DELAY_AFTER_TOTALS_MS = 5500;
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
@@ -37,6 +39,7 @@
     detailInvoiceNumberField: "#formaPodaciDokument_iD",
     editableDocumentSelectors: {
       invoiceNumber: "#formaPodaciDokument_iD",
+      buyerRegistrationName: "#formaSudioniciKupacHr_registrationName",
       dueDate: "#formaPodaciDokument_dueDate input",
       issueDate: "#formaPodaciDokument_issueDate input",
       issueTime: "#formaPodaciDokument_issueTime input",
@@ -46,6 +49,7 @@
       paymentReferenceNumber: "#formaPodaciPlacanje_pozivNaBrojPaymentID"
     },
     editableDocumentLabels: {
+      buyerRegistrationName: ["Naziv", "Pretrazi kupca"],
       dueDate: ["Datum dospijeca placanja"],
       issueDate: ["Datum izdavanja"],
       issueTime: ["Vrijeme izdavanja"],
@@ -114,6 +118,18 @@
       throw new Error("No extractedRows found in storage.");
     }
 
+    const restrictedCheck = await confirmRestrictedOrganizationAction(
+      extractionMeta,
+      "upis u FINA racun"
+    );
+    if (!restrictedCheck.allowed) {
+      return {
+        message: restrictedCheck.message,
+        cancelled: true,
+        restrictedCheck
+      };
+    }
+
     if (location.pathname === DESTINATION_CONFIG.searchPagePath) {
       return findAndOpenMatchingDocument(extractionMeta);
     }
@@ -163,6 +179,7 @@
 
     if (isEditableDocument) {
       await waitForEditableDocumentReady();
+      const documentTargetCheck = await ensureEditableDocumentMatchesTarget(extractionMeta);
       const pendingInvoiceNumber = await applyPendingInvoiceNumber();
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
@@ -181,6 +198,7 @@
       return {
         message: "Destination form updated and saved.",
         extractionMeta,
+        documentTargetCheck,
         fieldResults,
         lineItemResults,
         lineItemMatch,
@@ -192,6 +210,14 @@
     const createButton = findCreateFromDocumentButton();
 
     if (createButton) {
+      const duplicationGuardResult = await ensureDocumentOldEnoughForDuplication();
+      if (!duplicationGuardResult.allowed) {
+        return {
+          message: duplicationGuardResult.message,
+          duplicationGuardResult
+        };
+      }
+
       const currentInvoiceField = document.querySelector(DESTINATION_CONFIG.detailInvoiceNumberField);
       const currentInvoiceNumber = currentInvoiceField?.value?.trim() || "";
       const nextInvoiceNumber = incrementInvoiceNumber(currentInvoiceNumber, 22);
@@ -213,7 +239,8 @@
       return {
         message: nextInvoiceNumber
           ? `Create-from-document triggered. Planned invoice number: ${nextInvoiceNumber}.`
-          : "Create-from-document triggered."
+          : "Create-from-document triggered.",
+        duplicationGuardResult
       };
     }
 
@@ -240,7 +267,24 @@
       return;
     }
 
+    const storage = await safeGet([
+      STORAGE_KEYS.pendingDestinationInvoiceNumber,
+      STORAGE_KEYS.extractionMeta
+    ]);
+    if (!storage[STORAGE_KEYS.pendingDestinationInvoiceNumber]) {
+      return;
+    }
+
     await waitForEditableDocumentReady();
+    try {
+      await ensureEditableDocumentMatchesTarget(storage[STORAGE_KEYS.extractionMeta] || {});
+    } catch (error) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "auto-repair-target-mismatch", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
     const repairedInvoiceNumber = await applyPendingInvoiceNumber();
     if (!repairedInvoiceNumber) {
       return;
@@ -439,11 +483,19 @@
       `Razlika iznosa: ocekivano 0, dobiveno ${formatLocaleAmount(difference)}`,
       `Ukupni iznos bez PDV-a: ${formatLocaleAmount(destinationTotalNet)}`
     ].join(" | ");
-    const level = areNumbersClose(difference, 0) ? "success" : "warn";
+    const matches = areNumbersClose(difference, 0);
+    const level = matches ? "success" : "warn";
 
-    InvoiceLogger.showStatusOverlay(message, level, TOTAL_OVERLAY_DURATION_MS, {
-      position: "center"
-    });
+    InvoiceLogger.showStatusOverlay(
+      message,
+      level,
+      matches ? TOTAL_OVERLAY_DURATION_MS : TOTAL_MISMATCH_OVERLAY_DURATION_MS,
+      {
+        position: "center",
+        customBackground: matches ? undefined : "#7c3aed",
+        blink: !matches
+      }
+    );
     await InvoiceLogger.logEvent("info", "destination-content", "total-difference-checked", {
       sourceTotalNet,
       destinationTotalNet,
@@ -520,6 +572,190 @@
     );
 
     return updates.filter(Boolean);
+  }
+
+  async function ensureEditableDocumentMatchesTarget(extractionMeta) {
+    const expectedCustomerRaw =
+      extractionMeta?.organizationSearchName ||
+      extractionMeta?.organization ||
+      "";
+    const expectedCustomer = normalizeText(expectedCustomerRaw);
+
+    if (!expectedCustomer) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "destination-target-missing", "");
+      throw new Error("Ne mogu potvrditi kupca jer nedostaje izvorna organizacija.");
+    }
+
+    const customerField = await waitForEditableField(
+      DESTINATION_CONFIG.editableDocumentSelectors.buyerRegistrationName,
+      DESTINATION_CONFIG.editableDocumentLabels.buyerRegistrationName,
+      2000
+    );
+    const currentCustomerRaw = customerField?.value || customerField?.textContent || "";
+    const currentCustomer = normalizeText(currentCustomerRaw);
+
+    if (customerField) {
+      await revealElement(customerField, "Kupac");
+    }
+
+    if (!currentCustomer) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "destination-customer-missing", {
+        expectedCustomerRaw
+      });
+      throw new Error("Ne mogu potvrditi kupca na otvorenom FINA dokumentu.");
+    }
+
+    const matches =
+      currentCustomer.includes(expectedCustomer) || expectedCustomer.includes(currentCustomer);
+
+    if (!matches) {
+      const message = `Pogresan otvoreni racun. Ocekivani kupac: ${expectedCustomerRaw}. Trenutno otvoren: ${currentCustomerRaw}.`;
+      InvoiceLogger.showStatusOverlay(message, "warn", 7000, { position: "center" });
+      await InvoiceLogger.logEvent("warn", "destination-content", "destination-customer-mismatch", {
+        expectedCustomerRaw,
+        currentCustomerRaw
+      });
+      throw new Error(message);
+    }
+
+    await InvoiceLogger.logEvent("info", "destination-content", "destination-customer-verified", {
+      expectedCustomerRaw,
+      currentCustomerRaw
+    });
+
+    return {
+      expectedCustomer: expectedCustomerRaw,
+      currentCustomer: currentCustomerRaw
+    };
+  }
+
+  async function ensureDocumentOldEnoughForDuplication() {
+    const issueDateField = findDocumentIssueDateField();
+    if (issueDateField) {
+      await revealElement(issueDateField, "Datum izdavanja dokumenta");
+    }
+
+    const issueDateValue = issueDateField?.value?.trim() || getDocumentIssueDateValue();
+    if (!issueDateValue) {
+      const message = "Ne mogu provjeriti starost otvorenog dokumenta. Dupliciranje je zaustavljeno.";
+      InvoiceLogger.showStatusOverlay(message, "error", 7000, { position: "center" });
+      await InvoiceLogger.logEvent("warn", "destination-content", "duplication-age-check-missing-date", "");
+      return {
+        allowed: false,
+        message,
+        issueDate: "",
+        ageDays: null
+      };
+    }
+
+    const issueDate = parseCroatianDateString(issueDateValue);
+    if (!issueDate) {
+      const message = `Ne mogu procitati datum otvorenog dokumenta (${issueDateValue}). Dupliciranje je zaustavljeno.`;
+      InvoiceLogger.showStatusOverlay(message, "error", 7000, { position: "center" });
+      await InvoiceLogger.logEvent("warn", "destination-content", "duplication-age-check-invalid-date", {
+        issueDateValue
+      });
+      return {
+        allowed: false,
+        message,
+        issueDate: issueDateValue,
+        ageDays: null
+      };
+    }
+
+    const today = toStartOfDay(new Date());
+    const documentDay = toStartOfDay(issueDate);
+    const ageDays = Math.floor((today.getTime() - documentDay.getTime()) / (24 * 60 * 60 * 1000));
+
+    if (ageDays < 28) {
+      const message = `Taj dokument vec postoji. Otvoreni dokument je izdan ${formatCroatianDate(issueDate, true)} i star je ${ageDays} dana.`;
+      InvoiceLogger.showStatusOverlay(message, "error", 7000, { position: "center" });
+      const confirmed = window.confirm(`${message} Zelis li ipak nastaviti?`);
+
+      await InvoiceLogger.logEvent(
+        "warn",
+        "destination-content",
+        confirmed ? "duplication-age-check-confirmed-override" : "duplication-age-check-blocked",
+        {
+          issueDateValue,
+          ageDays
+        }
+      );
+
+      if (!confirmed) {
+        return {
+          allowed: false,
+          message,
+          issueDate: issueDateValue,
+          ageDays,
+          confirmed: false
+        };
+      }
+
+      InvoiceLogger.showStatusOverlay(
+        "Nastavljam unatoc upozorenju da dokument vec postoji.",
+        "warn",
+        3500,
+        { position: "center" }
+      );
+      return {
+        allowed: true,
+        message: `Nastavljam iako dokument postoji (${ageDays} dana).`,
+        issueDate: issueDateValue,
+        ageDays,
+        confirmed: true,
+        override: true
+      };
+    }
+
+    await InvoiceLogger.logEvent("info", "destination-content", "duplication-age-check-passed", {
+      issueDateValue,
+      ageDays
+    });
+    return {
+      allowed: true,
+      message: `Otvoreni dokument je dovoljno star za dupliciranje (${ageDays} dana).`,
+      issueDate: issueDateValue,
+      ageDays
+    };
+  }
+
+  async function confirmRestrictedOrganizationAction(extractionMeta, actionLabel) {
+    const organizationName =
+      extractionMeta?.organization ||
+      extractionMeta?.organizationSearchName ||
+      "";
+
+    if (!isRestrictedOrganization(organizationName)) {
+      return {
+        allowed: true,
+        confirmed: false
+      };
+    }
+
+    const message = `Upozorenje: organizacija je ${RESTRICTED_ORGANIZATION_NAME}. Zelis li zaista nastaviti za ${actionLabel}?`;
+    const confirmed = window.confirm(message);
+
+    await InvoiceLogger.logEvent("warn", "destination-content", "restricted-organization-confirmation", {
+      organizationName,
+      actionLabel,
+      confirmed
+    });
+
+    if (!confirmed) {
+      const cancelMessage = `Akcija je otkazana za ${RESTRICTED_ORGANIZATION_NAME}.`;
+      InvoiceLogger.showStatusOverlay(cancelMessage, "warn", 7000, { position: "center" });
+      return {
+        allowed: false,
+        confirmed: false,
+        message: cancelMessage
+      };
+    }
+
+    return {
+      allowed: true,
+      confirmed: true
+    };
   }
 
   async function setField(selector, value, eventName, labelCandidates = []) {
@@ -610,14 +846,26 @@
 
   async function applyLineItemRules(extractedRows) {
     const sourceRowsByName = groupSourceRowsByName(extractedRows);
-    const destinationRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows));
+    const destinationRowDescriptors = getDestinationRowDescriptors();
     const results = [];
 
-    for (const row of destinationRows) {
-      const destinationName =
-        row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
-      const normalizedDestinationName = normalizeText(destinationName);
+    for (const descriptor of destinationRowDescriptors) {
+      const destinationName = descriptor.destinationName;
+      const normalizedDestinationName = descriptor.normalizedDestinationName;
       if (!normalizedDestinationName) {
+        continue;
+      }
+
+      const row = findDestinationRowByDescriptor(descriptor);
+      if (!row) {
+        results.push({
+          type: "destination-row-missing",
+          destinationName
+        });
+        await InvoiceLogger.logEvent("warn", "destination-content", "destination-row-missing", {
+          destinationName,
+          occurrence: descriptor.occurrence
+        });
         continue;
       }
 
@@ -662,6 +910,26 @@
     }
 
     return groups;
+  }
+
+  function getDestinationRowDescriptors() {
+    const occurrenceMap = new Map();
+
+    return Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows))
+      .map((row) => {
+        const destinationName =
+          row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
+        const normalizedDestinationName = normalizeText(destinationName);
+        const occurrence = occurrenceMap.get(normalizedDestinationName) || 0;
+        occurrenceMap.set(normalizedDestinationName, occurrence + 1);
+
+        return {
+          destinationName,
+          normalizedDestinationName,
+          occurrence
+        };
+      })
+      .filter((descriptor) => descriptor.normalizedDestinationName);
   }
 
   async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
@@ -1070,6 +1338,17 @@
     }) || null;
   }
 
+  function findDestinationRowByDescriptor(descriptor) {
+    const matchingRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).filter(
+      (row) => {
+        const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "";
+        return normalizeText(destinationName) === descriptor.normalizedDestinationName;
+      }
+    );
+
+    return matchingRows[descriptor.occurrence] || null;
+  }
+
   function getSourceLineItemName(row) {
     const candidateHeaders = [
       "Ime/Destinacija tarife",
@@ -1221,6 +1500,65 @@
     }
 
     return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  }
+
+  function parseCroatianDateString(value) {
+    const normalized = String(value || "")
+      .replace(/\s+/g, "")
+      .trim();
+    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.$/.exec(normalized);
+    if (!match) {
+      return null;
+    }
+
+    return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  }
+
+  function getDocumentIssueDateValue() {
+    const directField = findDocumentIssueDateField();
+    if (directField?.value?.trim()) {
+      return directField.value.trim();
+    }
+
+    const formItem = findFormItemByLabels(DESTINATION_CONFIG.editableDocumentLabels.issueDate);
+    const fallbackField = formItem?.querySelector("input");
+    if (fallbackField?.value?.trim()) {
+      return fallbackField.value.trim();
+    }
+
+    return "";
+  }
+
+  function findDocumentIssueDateField() {
+    const directField = document.querySelector(DESTINATION_CONFIG.editableDocumentSelectors.issueDate);
+    if (directField) {
+      return directField;
+    }
+
+    const formItem = findFormItemByLabels(DESTINATION_CONFIG.editableDocumentLabels.issueDate);
+    return formItem?.querySelector("input") || null;
+  }
+
+  function toStartOfDay(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
+  function isRestrictedOrganization(value) {
+    const normalized = canonicalizeOrganizationValue(value);
+    return (
+      normalized === canonicalizeOrganizationValue(RESTRICTED_ORGANIZATION_NAME) ||
+      normalized === canonicalizeOrganizationValue("Zatvor u Sisku")
+    );
+  }
+
+  function canonicalizeOrganizationValue(value) {
+    return String(value || "")
+      .replace(/\u00a0/g, " ")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
   }
 
   function normalizeText(value) {

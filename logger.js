@@ -123,7 +123,20 @@
     }
 
     const overlayId = "__invoice_helper_status_overlay";
+    const overlayStyleId = "__invoice_helper_status_overlay_style";
     let overlay = document.getElementById(overlayId);
+
+    if (!document.getElementById(overlayStyleId)) {
+      const style = document.createElement("style");
+      style.id = overlayStyleId;
+      style.textContent = `
+        @keyframes invoice-helper-overlay-blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.18; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
 
     if (!overlay) {
       overlay = document.createElement("div");
@@ -152,7 +165,8 @@
     };
 
     overlay.textContent = message;
-    overlay.style.background = colors[level] || colors.info;
+    overlay.style.background = options.customBackground || colors[level] || colors.info;
+    overlay.style.color = options.customTextColor || "#ffffff";
     overlay.style.top = options.position === "center" ? "50%" : "16px";
     overlay.style.right = options.position === "center" ? "auto" : "16px";
     overlay.style.left = options.position === "center" ? "50%" : "auto";
@@ -160,9 +174,11 @@
     overlay.style.maxWidth = options.position === "center" ? "520px" : "360px";
     overlay.style.fontSize = options.position === "center" ? "16px" : "13px";
     overlay.style.padding = options.position === "center" ? "18px 22px" : "12px 14px";
+    overlay.style.animation = options.blink ? "invoice-helper-overlay-blink 0.7s step-end infinite" : "none";
 
     clearTimeout(showStatusOverlay.timeoutId);
     showStatusOverlay.timeoutId = setTimeout(() => {
+      overlay.style.animation = "none";
       overlay.remove();
     }, Math.max(250, Number(durationMs) || 3500));
   }
