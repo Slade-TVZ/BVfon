@@ -428,14 +428,17 @@
   }
 
   async function compareSourceAndDestinationTotals(extractionMeta) {
-    await sleep(350);
+    await sleep(150);
 
     const sourceTotalNet = Number(extractionMeta?.sourceTotalNet || 0);
     const totalField = await findDestinationNetTotalField();
     await revealElement(totalField, "Ukupni iznos bez PDV-a");
     const destinationTotalNet = parseLocaleNumber(totalField?.value || totalField?.textContent || "");
     const difference = roundCurrency(destinationTotalNet - sourceTotalNet);
-    const message = `Razlika iznosa: ocekivano 0, dobiveno ${formatLocaleAmount(difference)}`;
+    const message = [
+      `Razlika iznosa: ocekivano 0, dobiveno ${formatLocaleAmount(difference)}`,
+      `Ukupni iznos bez PDV-a: ${formatLocaleAmount(destinationTotalNet)}`
+    ].join(" | ");
     const level = areNumbersClose(difference, 0) ? "success" : "warn";
 
     InvoiceLogger.showStatusOverlay(message, level, TOTAL_OVERLAY_DURATION_MS, {
@@ -456,9 +459,16 @@
   }
 
   async function findDestinationNetTotalField() {
+    const directField =
+      document.querySelector(DESTINATION_CONFIG.totals.taxExclusiveAmount) ||
+      document.querySelector(DESTINATION_CONFIG.totals.lineExtensionAmount);
+    if (directField) {
+      return directField;
+    }
+
     return (
-      (await waitForEditableField(DESTINATION_CONFIG.totals.taxExclusiveAmount, [], 2500)) ||
-      (await waitForEditableField(DESTINATION_CONFIG.totals.lineExtensionAmount, [], 2500))
+      (await waitForEditableField(DESTINATION_CONFIG.totals.taxExclusiveAmount, [], 900)) ||
+      (await waitForEditableField(DESTINATION_CONFIG.totals.lineExtensionAmount, [], 900))
     );
   }
 
@@ -911,8 +921,8 @@
     await revealElement(editContext.saveButton, "Spremi stavku");
     emphasizeElement(editContext.saveButton, "rgba(34, 197, 94, 0.24)");
     editContext.saveButton.click();
-    await waitForEditorToClose(editContext);
-    await sleep(250);
+    await waitForEditorToClose(editContext, editContext.mode === "inline" ? 1200 : 4000);
+    await sleep(editContext.mode === "inline" ? 120 : 250);
   }
 
   async function waitForEditorToClose(editContext, timeoutMs = 4000) {
@@ -920,7 +930,10 @@
 
     while (Date.now() - started < timeoutMs) {
       if (editContext.mode === "inline") {
-        if (!isInlineEditableRow(editContext.editorRoot)) {
+        if (
+          !isInlineEditableRow(editContext.editorRoot) ||
+          !findInlineSaveButton(editContext.editorRoot)
+        ) {
           return true;
         }
       } else if (!document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot)) {
