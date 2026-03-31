@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v11";
+  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v12";
   const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
   const VISUAL_SCROLL_DELAY_MS = 550;
   const VISUAL_FIELD_DELAY_MS = 300;
@@ -669,8 +669,12 @@
 
     if (ageDays < 28) {
       const message = `Taj dokument vec postoji. Otvoreni dokument je izdan ${formatCroatianDate(issueDate, true)} i star je ${ageDays} dana.`;
-      InvoiceLogger.showStatusOverlay(message, "error", 7000, { position: "center" });
-      const confirmed = window.confirm(`${message} Zelis li ipak nastaviti?`);
+      const confirmed = await showExtensionConfirm(`${message} Zelis li ipak nastaviti?`, {
+        title: "Dokument vec postoji",
+        tone: "error",
+        confirmLabel: "Ipak nastavi",
+        cancelLabel: "Ne nastavljaj"
+      });
 
       await InvoiceLogger.logEvent(
         "warn",
@@ -734,7 +738,12 @@
     }
 
     const message = `Upozorenje: organizacija je ${RESTRICTED_ORGANIZATION_NAME}. Zelis li zaista nastaviti za ${actionLabel}?`;
-    const confirmed = window.confirm(message);
+    const confirmed = await showExtensionConfirm(message, {
+      title: "Posebna potvrda",
+      tone: "warn",
+      confirmLabel: "Nastavi",
+      cancelLabel: "Ne nastavljaj"
+    });
 
     await InvoiceLogger.logEvent("warn", "destination-content", "restricted-organization-confirmation", {
       organizationName,
@@ -779,6 +788,14 @@
       value
     });
     return { selector, value };
+  }
+
+  async function showExtensionConfirm(message, options = {}) {
+    if (typeof InvoiceLogger?.showConfirmDialog === "function") {
+      return InvoiceLogger.showConfirmDialog(message, options);
+    }
+
+    return window.confirm(String(message || ""));
   }
 
   async function setInvoicePeriodRange(selector, referenceDate, labelCandidates = []) {

@@ -18,16 +18,5 @@
   "action": {
     "default_title": "Invoice Helper",
     "default_popup": "popup.html"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "floating-panel.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

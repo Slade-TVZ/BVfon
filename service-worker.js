@@ -14,12 +14,10 @@ initializeServiceWorker();
 
 chrome.runtime.onInstalled.addListener(() => {
   initializeServiceWorker();
-  refreshFloatingPanelsOnOpenTabs().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   initializeServiceWorker();
-  refreshFloatingPanelsOnOpenTabs().catch(() => {});
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -186,18 +184,6 @@ async function syncFloatingPanelOnActiveTab() {
   });
 
   return { message: "Floating panel synced." };
-}
-
-async function refreshFloatingPanelsOnOpenTabs() {
-  const tabs = await chrome.tabs.query({});
-
-  for (const tab of tabs) {
-    if (!tab?.id || !isInjectableUrl(tab.url)) {
-      continue;
-    }
-
-    await refreshFloatingPanelInTab(tab.id).catch(() => {});
-  }
 }
 
 async function refreshFloatingPanelInTab(tabId) {

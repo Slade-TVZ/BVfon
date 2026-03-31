@@ -1,5 +1,5 @@
 (function () {
-  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v7";
+  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v8";
   const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
 
   if (globalThis.__invoiceHelperSourceInitialized === SOURCE_SCRIPT_VERSION) {
@@ -259,7 +259,12 @@
     }
 
     const message = `Upozorenje: organizacija je ${RESTRICTED_ORGANIZATION_NAME}. Zelis li zaista nastaviti za ${actionLabel}?`;
-    const confirmed = window.confirm(message);
+    const confirmed = await showExtensionConfirm(message, {
+      title: "Posebna potvrda",
+      tone: "warn",
+      confirmLabel: "Nastavi",
+      cancelLabel: "Ne nastavljaj"
+    });
 
     await InvoiceLogger.logEvent("warn", "source-content", "restricted-organization-confirmation", {
       organizationName,
@@ -289,6 +294,14 @@
       normalized === canonicalizeOrganizationValue(RESTRICTED_ORGANIZATION_NAME) ||
       normalized === canonicalizeOrganizationValue("Zatvor u Sisku")
     );
+  }
+
+  async function showExtensionConfirm(message, options = {}) {
+    if (typeof InvoiceLogger?.showConfirmDialog === "function") {
+      return InvoiceLogger.showConfirmDialog(message, options);
+    }
+
+    return window.confirm(String(message || ""));
   }
 
   async function validateExtractedFinancialPeriod(extractionMeta) {

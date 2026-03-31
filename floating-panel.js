@@ -1,5 +1,5 @@
 (function () {
-  const PANEL_VERSION = "2026-03-30-floating-panel-v5";
+  const PANEL_VERSION = "2026-03-31-floating-panel-v6";
   const PANEL_ID = "__invoice_helper_floating_panel";
   const LAUNCHER_ID = "__invoice_helper_floating_launcher";
   const SOURCE_ORGANIZATION_KEY = "sourceOrganizationName";
@@ -15,13 +15,11 @@
   }
 
   let panelState = {
-    visible: true,
     left: 16,
     top: 16
   };
 
   const panel = document.createElement("div");
-  const launcher = document.createElement("button");
   const header = document.createElement("div");
   const title = document.createElement("div");
   const closeBtn = document.createElement("button");
@@ -58,24 +56,6 @@
   panel.style.display = "grid";
   panel.style.gap = "8px";
   panel.style.userSelect = "none";
-
-  launcher.id = LAUNCHER_ID;
-  launcher.type = "button";
-  launcher.textContent = "Invoice Helper";
-  launcher.style.position = "fixed";
-  launcher.style.left = "16px";
-  launcher.style.top = "16px";
-  launcher.style.zIndex = "2147483645";
-  launcher.style.display = "none";
-  launcher.style.border = "0";
-  launcher.style.borderRadius = "999px";
-  launcher.style.padding = "9px 12px";
-  launcher.style.background = "#155eef";
-  launcher.style.color = "#ffffff";
-  launcher.style.fontSize = "12px";
-  launcher.style.fontWeight = "700";
-  launcher.style.cursor = "pointer";
-  launcher.style.boxShadow = "0 12px 28px rgba(20, 44, 74, 0.16)";
 
   header.style.display = "flex";
   header.style.alignItems = "center";
@@ -192,7 +172,6 @@
   exportLogsBtn.addEventListener("click", exportLogsFile);
   debugToggle.addEventListener("change", updateDebugMode);
   closeBtn.addEventListener("click", closePanel);
-  launcher.addEventListener("click", openPanel);
 
   header.appendChild(title);
   header.appendChild(closeBtn);
@@ -211,7 +190,6 @@
   advancedSection.appendChild(logs);
   panel.appendChild(advancedSection);
   document.body.appendChild(panel);
-  document.body.appendChild(launcher);
 
   initializePanel().catch((error) => {
     setStatus(error instanceof Error ? error.message : String(error), true);
@@ -226,7 +204,6 @@
     const savedState = stored[PANEL_STATE_KEY];
     if (savedState && typeof savedState === "object") {
       panelState = {
-        visible: savedState.visible !== false,
         left: Number.isFinite(savedState.left) ? savedState.left : 16,
         top: Number.isFinite(savedState.top) ? savedState.top : 16
       };
@@ -234,12 +211,6 @@
 
     clampAndApplyPosition(panelState.left, panelState.top);
     attachDragging();
-
-    if (panelState.visible) {
-      showPanel();
-    } else {
-      hidePanel();
-    }
   }
 
   async function runAction(action) {
@@ -373,35 +344,21 @@
   async function persistPanelState() {
     await chrome.storage.local.set({
       [PANEL_STATE_KEY]: {
-        visible: panelState.visible,
         left: panelState.left,
         top: panelState.top
       }
     });
   }
 
-  function openPanel() {
-    panelState.visible = true;
-    showPanel();
-    persistPanelState().catch(() => {});
-  }
-
   function closePanel() {
-    panelState.visible = false;
-    hidePanel();
     persistPanelState().catch(() => {});
-  }
-
-  function showPanel() {
-    panel.style.display = "grid";
-    launcher.style.display = "none";
-  }
-
-  function hidePanel() {
-    panel.style.display = "none";
-    launcher.style.display = "block";
-    launcher.style.left = `${panelState.left}px`;
-    launcher.style.top = `${panelState.top}px`;
+    document.getElementById(LAUNCHER_ID)?.remove();
+    panel.remove();
+    try {
+      delete globalThis.__invoiceHelperFloatingPanelInitialized;
+    } catch (_error) {
+      globalThis.__invoiceHelperFloatingPanelInitialized = undefined;
+    }
   }
 
   function attachDragging() {
@@ -453,8 +410,6 @@
 
     panel.style.left = `${panelState.left}px`;
     panel.style.top = `${panelState.top}px`;
-    launcher.style.left = `${panelState.left}px`;
-    launcher.style.top = `${panelState.top}px`;
   }
 
   async function requestAction(action, extra = {}) {

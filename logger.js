@@ -183,6 +183,186 @@
     }, Math.max(250, Number(durationMs) || 3500));
   }
 
+  function showConfirmDialog(message, options = {}) {
+    if (typeof document === "undefined" || !document.body) {
+      return Promise.resolve(window.confirm(String(message || "")));
+    }
+
+    const backdropId = "__invoice_helper_confirm_backdrop";
+    const dialogStyleId = "__invoice_helper_confirm_style";
+    const existingBackdrop = document.getElementById(backdropId);
+    if (existingBackdrop) {
+      existingBackdrop.remove();
+    }
+
+    if (!document.getElementById(dialogStyleId)) {
+      const style = document.createElement("style");
+      style.id = dialogStyleId;
+      style.textContent = `
+        @keyframes invoice-helper-confirm-pop {
+          from { opacity: 0; transform: translateY(12px) scale(0.98); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    const tone = String(options.tone || "warn").toLowerCase();
+    const palette = {
+      warn: {
+        badgeBg: "#fff4ce",
+        badgeText: "#9a6700",
+        border: "#f0b429",
+        confirmBg: "#c97a00"
+      },
+      error: {
+        badgeBg: "#ffe2e0",
+        badgeText: "#b42318",
+        border: "#f97066",
+        confirmBg: "#c62828"
+      },
+      info: {
+        badgeBg: "#dbeafe",
+        badgeText: "#1d4ed8",
+        border: "#60a5fa",
+        confirmBg: "#1f5eff"
+      }
+    };
+    const colors = palette[tone] || palette.warn;
+
+    return new Promise((resolve) => {
+      const backdrop = document.createElement("div");
+      backdrop.id = backdropId;
+      backdrop.style.position = "fixed";
+      backdrop.style.inset = "0";
+      backdrop.style.zIndex = "2147483647";
+      backdrop.style.display = "flex";
+      backdrop.style.alignItems = "center";
+      backdrop.style.justifyContent = "center";
+      backdrop.style.padding = "20px";
+      backdrop.style.background = "rgba(15, 23, 42, 0.45)";
+      backdrop.style.backdropFilter = "blur(2px)";
+
+      const dialog = document.createElement("div");
+      dialog.style.width = "min(520px, calc(100vw - 32px))";
+      dialog.style.background = "#ffffff";
+      dialog.style.border = `2px solid ${colors.border}`;
+      dialog.style.borderRadius = "18px";
+      dialog.style.boxShadow = "0 28px 60px rgba(15, 23, 42, 0.28)";
+      dialog.style.padding = "20px";
+      dialog.style.fontFamily = "Segoe UI, Arial, sans-serif";
+      dialog.style.color = "#0f172a";
+      dialog.style.animation = "invoice-helper-confirm-pop 0.18s ease-out";
+
+      const badge = document.createElement("div");
+      badge.textContent = options.badgeText || "Invoice Helper potvrda";
+      badge.style.display = "inline-flex";
+      badge.style.alignItems = "center";
+      badge.style.padding = "6px 10px";
+      badge.style.borderRadius = "999px";
+      badge.style.background = colors.badgeBg;
+      badge.style.color = colors.badgeText;
+      badge.style.fontSize = "12px";
+      badge.style.fontWeight = "700";
+      badge.style.letterSpacing = "0.02em";
+      badge.style.marginBottom = "12px";
+
+      const title = document.createElement("div");
+      title.textContent = options.title || "Potvrdi nastavak";
+      title.style.fontSize = "22px";
+      title.style.fontWeight = "700";
+      title.style.lineHeight = "1.2";
+      title.style.marginBottom = "10px";
+
+      const body = document.createElement("div");
+      body.textContent = String(message || "");
+      body.style.fontSize = "18px";
+      body.style.lineHeight = "1.5";
+      body.style.marginBottom = "12px";
+      body.style.whiteSpace = "pre-wrap";
+
+      const note = document.createElement("div");
+      note.textContent =
+        options.note || "Ovu poruku prikazuje ekstenzija Invoice Helper, ne FINA servis.";
+      note.style.fontSize = "13px";
+      note.style.lineHeight = "1.45";
+      note.style.color = "#475569";
+      note.style.marginBottom = "18px";
+
+      const actions = document.createElement("div");
+      actions.style.display = "flex";
+      actions.style.justifyContent = "flex-end";
+      actions.style.gap = "12px";
+      actions.style.flexWrap = "wrap";
+
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.textContent = options.cancelLabel || "Odustani";
+      cancelButton.style.border = "1px solid #cbd5e1";
+      cancelButton.style.background = "#f8fafc";
+      cancelButton.style.color = "#0f172a";
+      cancelButton.style.borderRadius = "12px";
+      cancelButton.style.padding = "10px 18px";
+      cancelButton.style.fontSize = "15px";
+      cancelButton.style.fontWeight = "700";
+      cancelButton.style.cursor = "pointer";
+
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.textContent = options.confirmLabel || "Nastavi";
+      confirmButton.style.border = "none";
+      confirmButton.style.background = colors.confirmBg;
+      confirmButton.style.color = "#ffffff";
+      confirmButton.style.borderRadius = "12px";
+      confirmButton.style.padding = "10px 18px";
+      confirmButton.style.fontSize = "15px";
+      confirmButton.style.fontWeight = "700";
+      confirmButton.style.cursor = "pointer";
+
+      let settled = false;
+      const cleanup = () => {
+        document.removeEventListener("keydown", onKeyDown, true);
+        backdrop.remove();
+      };
+
+      const finish = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(Boolean(value));
+      };
+
+      const onKeyDown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finish(true);
+        }
+      };
+
+      dialog.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      cancelButton.addEventListener("click", () => finish(false));
+      confirmButton.addEventListener("click", () => finish(true));
+
+      actions.append(cancelButton, confirmButton);
+      dialog.append(badge, title, body, note, actions);
+      backdrop.appendChild(dialog);
+      document.body.appendChild(backdrop);
+
+      document.addEventListener("keydown", onKeyDown, true);
+      requestAnimationFrame(() => confirmButton.focus());
+    });
+  }
+
   globalThis.InvoiceLogger = {
     LOGS_KEY,
     DEBUG_MODE_KEY,
@@ -193,6 +373,7 @@
     exportLogs,
     getDebugMode,
     setDebugMode,
-    showStatusOverlay
+    showStatusOverlay,
+    showConfirmDialog
   };
 })();
