@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-04-01-destination-v26";
+  const DESTINATION_SCRIPT_VERSION = "2026-04-01-destination-v27";
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -37,6 +37,15 @@
       paymentNote: "#formaPodaciPlacanje_instructionNote",
       paymentModel: "#formaPodaciPlacanje_modelPaymentID",
       paymentReferenceNumber: "#formaPodaciPlacanje_pozivNaBrojPaymentID"
+    },
+    customerFields: {
+      registrationName: "#formaSudioniciKupacHr_registrationName",
+      partyIdentificationId: "#formaSudioniciKupacHr_partyIdentificationId",
+      taxSchemeCompanyID: "#formaSudioniciKupacHr_taxSchemeCompanyID",
+      endpointID: "#formaSudioniciKupacHr_endpointID",
+      streetName: "#formaSudioniciKupacHr_address_streetName",
+      cityName: "#formaSudioniciKupacHr_address_cityName",
+      postalZone: "#formaSudioniciKupacHr_address_postalZone"
     },
     editableDocumentLabels: {
       dueDate: ["Datum dospijeca placanja"],
@@ -114,17 +123,21 @@
   }
 
   async function findAndOpenMatchingDocument(extractionMeta) {
-    const targetName = normalizeText(extractionMeta.organizationSearchName || "");
+    const targetName = normalizeText(
+      extractionMeta.organizationSearchName || extractionMeta.organization || ""
+    );
+    const organizationProfile = buildOrganizationMatchProfile(extractionMeta);
     if (!targetName) {
       throw new Error("Organization name metadata is missing.");
     }
 
     InvoiceLogger.showStatusOverlay("Searching matching document", "info");
     await InvoiceLogger.logEvent("info", "destination-content", "destination-search-started", {
-      targetName
+      targetName,
+      organizationProfile
     });
 
-    const matchingRow = await findMatchingRowAcrossPages(targetName);
+    const matchingRow = await findMatchingRowAcrossPages(targetName, organizationProfile);
     if (!matchingRow) {
       await InvoiceLogger.logEvent("warn", "destination-content", "matching-document-not-found", {
         targetName
@@ -155,6 +168,7 @@
 
     if (isEditableDocument) {
       await waitForEditableDocumentReady();
+      await ensureOpenedCustomerMatches(extractionMeta);
       const pendingInvoiceNumber = await applyPendingInvoiceNumber();
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
@@ -182,6 +196,7 @@
     const createButton = findCreateFromDocumentButton();
 
     if (createButton) {
+      await ensureOpenedCustomerMatches(extractionMeta);
       const currentInvoiceField = document.querySelector(DESTINATION_CONFIG.detailInvoiceNumberField);
       const currentInvoiceNumber = currentInvoiceField?.value?.trim() || "";
       const nextInvoiceNumber = incrementInvoiceNumber(currentInvoiceNumber, 22);
@@ -254,26 +269,32 @@
     });
   }
 
-  async function findMatchingRowAcrossPages(targetName) {
+  async function findMatchingRowAcrossPages(targetName, organizationProfile = null) {
     let pageGuard = 0;
 
     while (pageGuard < 10) {
       await waitForRows();
 
       const matchingRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.resultsRows))
-        .filter((row) => {
-          const cells = row.querySelectorAll("td");
-          const customerCell = cells[DESTINATION_CONFIG.resultsCustomerCellIndex];
-          const customerName = normalizeText(customerCell?.textContent || "");
-          return customerName.includes(targetName);
-        })
-        .sort((left, right) => getRowNumericId(right) - getRowNumericId(left));
+        .map((row) => ({
+          row,
+          score: scoreSearchRowAgainstOrganization(row, targetName, organizationProfile)
+        }))
+        .filter((candidate) => candidate.score > Number.NEGATIVE_INFINITY)
+        .sort((left, right) => {
+          if (right.score !== left.score) {
+            return right.score - left.score;
+          }
 
-      const matchingRow = matchingRows[0] || null;
+          return getRowNumericId(right.row) - getRowNumericId(left.row);
+        });
+
+      const matchingRow = matchingRows[0]?.row || null;
 
       if (matchingRow) {
         await InvoiceLogger.logEvent("info", "destination-content", "matching-document-found", {
           targetName,
+          organizationProfile,
           rowSummary: summarizeSearchRow(matchingRow)
         });
         return matchingRow;
@@ -291,6 +312,211 @@
     }
 
     return null;
+  }
+
+  function buildOrganizationMatchProfile(extractionMeta = {}) {
+    const rawOrganization = String(
+      extractionMeta.organization || extractionMeta.organizationSearchName || ""
+    ).trim();
+    const normalizedOrganization = normalizeText(rawOrganization);
+    const profile = {
+      rawOrganization,
+      normalizedOrganization,
+      broadTerms: [],
+      preferredTerms: [],
+      forbiddenTerms: [],
+      exactAliases: []
+    };
+
+    if (!normalizedOrganization) {
+      return profile;
+    }
+
+    if (normalizedOrganization.includes("TUROPOLJE")) {
+      profile.broadTerms.push("TUROPOLJE");
+
+      if (containsAnyOrganizationPattern(normalizedOrganization, [/ODGOJNI/, /\bODG\b/])) {
+        profile.preferredTerms.push("ODGOJNI", "ODGOJNI ZAVOD");
+        profile.forbiddenTerms.push("KAZNIONICA");
+        profile.exactAliases.push("ODGOJNI ZAVOD U TUROPOLJU", "TUROPOLJE ODGOJNI ZAVOD");
+      }
+
+      if (containsAnyOrganizationPattern(normalizedOrganization, [/KAZNIONICA/, /\bKAZ\b/])) {
+        profile.preferredTerms.push("KAZNIONICA");
+        profile.forbiddenTerms.push("ODGOJNI");
+        profile.exactAliases.push("KAZNIONICA U TUROPOLJU", "TUROPOLJE KAZNIONICA");
+      }
+    }
+
+    if (normalizedOrganization.includes("POZEGA")) {
+      profile.broadTerms.push("POZEGA");
+
+      if (
+        containsAnyOrganizationPattern(normalizedOrganization, [
+          /ZENSK/,
+          /\bZENE\b/,
+          /\bKAZ\s*Z\b/
+        ])
+      ) {
+        profile.preferredTerms.push("ZENSK", "ZENE");
+        profile.forbiddenTerms.push("MUSK", "MUSKI");
+      }
+
+      if (
+        containsAnyOrganizationPattern(normalizedOrganization, [
+          /MUSK/,
+          /\bMUSKI\b/,
+          /\bKAZ\s*M\b/
+        ])
+      ) {
+        profile.preferredTerms.push("MUSK", "MUSKI");
+        profile.forbiddenTerms.push("ZENSK", "ZENE");
+      }
+    }
+
+    profile.broadTerms = Array.from(new Set(profile.broadTerms));
+    profile.preferredTerms = Array.from(new Set(profile.preferredTerms));
+    profile.forbiddenTerms = Array.from(new Set(profile.forbiddenTerms));
+    profile.exactAliases = Array.from(new Set(profile.exactAliases));
+
+    return profile;
+  }
+
+  function containsAnyOrganizationPattern(value, patterns) {
+    return patterns.some((pattern) => {
+      if (pattern instanceof RegExp) {
+        return pattern.test(value);
+      }
+
+      return value.includes(normalizeText(pattern));
+    });
+  }
+
+  function scoreSearchRowAgainstOrganization(row, targetName, organizationProfile = null) {
+    const summary = summarizeSearchRow(row);
+    const customerName = summary.customer || "";
+
+    if (!customerName) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    const profile = organizationProfile || buildOrganizationMatchProfile({});
+    const broadTerms = profile.broadTerms || [];
+    const preferredTerms = profile.preferredTerms || [];
+    const forbiddenTerms = profile.forbiddenTerms || [];
+    const exactAliases = profile.exactAliases || [];
+
+    if (broadTerms.length && broadTerms.some((term) => !customerName.includes(term))) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    if (forbiddenTerms.some((term) => customerName.includes(term))) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    let score = 0;
+
+    if (targetName && customerName === targetName) {
+      score += 500;
+    } else if (targetName && customerName.includes(targetName)) {
+      score += 260;
+    }
+
+    if (exactAliases.some((alias) => customerName.includes(normalizeText(alias)))) {
+      score += 220;
+    }
+
+    preferredTerms.forEach((term) => {
+      if (customerName.includes(term)) {
+        score += 90;
+      }
+    });
+
+    score += calculateOrganizationTermOverlap(customerName, targetName) * 12;
+
+    if (!score && targetName) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    return score;
+  }
+
+  function calculateOrganizationTermOverlap(customerName, targetName) {
+    const searchTerms = String(targetName || "")
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length >= 4);
+
+    return searchTerms.filter((term) => customerName.includes(term)).length;
+  }
+
+  async function ensureOpenedCustomerMatches(extractionMeta = {}) {
+    const profile = buildOrganizationMatchProfile(extractionMeta);
+    if (
+      !profile.broadTerms.length &&
+      !profile.preferredTerms.length &&
+      !profile.forbiddenTerms.length &&
+      !profile.exactAliases.length
+    ) {
+      return;
+    }
+
+    const customerSnapshot = readOpenedCustomerSnapshot();
+    const snapshotText = normalizeText(
+      [
+        customerSnapshot.registrationName,
+        customerSnapshot.partyIdentificationId,
+        customerSnapshot.taxSchemeCompanyID,
+        customerSnapshot.endpointID,
+        customerSnapshot.streetName,
+        customerSnapshot.cityName,
+        customerSnapshot.postalZone
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    if (profile.broadTerms.some((term) => !snapshotText.includes(term))) {
+      await logOpenedCustomerMismatch(profile, customerSnapshot, "broad-term-missing");
+      throw new Error(`Opened customer does not match source organization "${profile.rawOrganization}".`);
+    }
+
+    if (profile.forbiddenTerms.some((term) => snapshotText.includes(term))) {
+      await logOpenedCustomerMismatch(profile, customerSnapshot, "forbidden-term-present");
+      throw new Error(`Opened customer conflicts with source organization "${profile.rawOrganization}".`);
+    }
+  }
+
+  async function logOpenedCustomerMismatch(profile, customerSnapshot, reason) {
+    await InvoiceLogger.logEvent("error", "destination-content", "opened-customer-mismatch", {
+      reason,
+      profile,
+      customerSnapshot
+    });
+    InvoiceLogger.showStatusOverlay("Kupac na FINA dokumentu ne odgovara source organizaciji", "error");
+  }
+
+  function readOpenedCustomerSnapshot() {
+    const selectors = DESTINATION_CONFIG.customerFields;
+    return {
+      registrationName: readInputValue(selectors.registrationName),
+      partyIdentificationId: readInputValue(selectors.partyIdentificationId),
+      taxSchemeCompanyID: readInputValue(selectors.taxSchemeCompanyID),
+      endpointID: readInputValue(selectors.endpointID),
+      streetName: readInputValue(selectors.streetName),
+      cityName: readInputValue(selectors.cityName),
+      postalZone: readInputValue(selectors.postalZone)
+    };
+  }
+
+  function readInputValue(selector) {
+    const element = document.querySelector(selector);
+    return (
+      element?.value?.trim() ||
+      element?.getAttribute?.("value")?.trim?.() ||
+      element?.textContent?.trim() ||
+      ""
+    );
   }
 
   async function applyPendingInvoiceNumber() {
