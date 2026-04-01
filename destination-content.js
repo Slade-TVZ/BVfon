@@ -1,5 +1,5 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-04-01-destination-v27";
+  const DESTINATION_SCRIPT_VERSION = "2026-04-01-destination-v28";
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -26,6 +26,12 @@
       ".nav-action-button",
       'button[data-action="copy-document"]',
       'button[data-testid="create-from-document"]'
+    ],
+    saveDocumentSelectors: [
+      '#submitForma button',
+      '.nav-action-button',
+      'button[data-action="update-document"]',
+      'button[data-testid="update-document"]'
     ],
     detailInvoiceNumberField: "#formaPodaciDokument_iD",
     editableDocumentSelectors: {
@@ -173,15 +179,20 @@
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
       const totalDifference = await compareSourceAndDestinationTotals(extractionMeta);
+      const saveResult = await saveDestinationDocument();
       const lineItemMatch = await findMatchingLineItem(extractedRows);
 
       await InvoiceLogger.logEvent("info", "destination-content", "fill-completed", {
         fieldResults,
         lineItemResults,
         totalDifference,
+        saveResult,
         lineItemMatch
       });
-      InvoiceLogger.showStatusOverlay("Fill completed", "success");
+      InvoiceLogger.showStatusOverlay(
+        saveResult?.saved ? "Fill completed and document saved" : "Fill completed",
+        saveResult?.saved ? "success" : "warn"
+      );
 
       return {
         message: "Destination form updated.",
@@ -189,6 +200,7 @@
         fieldResults,
         lineItemResults,
         totalDifference,
+        saveResult,
         lineItemMatch
       };
     }
@@ -610,6 +622,77 @@
       const text = normalizeText(button?.textContent || "");
       return text.includes("IZRADI NOVI DOKUMENT IZ PRIKAZANOG");
     }) || null;
+  }
+
+  function findSaveDocumentButton() {
+    const candidates = DESTINATION_CONFIG.saveDocumentSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector))
+    );
+
+    return (
+      candidates.find((button) => {
+        const text = normalizeText(button?.textContent || "");
+        return text.includes("AZURIRAJ DOKUMENT");
+      }) || null
+    );
+  }
+
+  async function saveDestinationDocument() {
+    const saveButton = findSaveDocumentButton();
+    if (!saveButton || saveButton.disabled) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "document-save-button-missing", {
+        availableButtons: DESTINATION_CONFIG.saveDocumentSelectors
+      });
+      return {
+        saved: false,
+        reason: "save-button-missing"
+      };
+    }
+
+    emphasizeElement(saveButton, "rgba(34, 197, 94, 0.24)");
+    saveButton.click();
+    const successAlert = await waitForDocumentSaveSuccessAlert();
+    const saved = Boolean(successAlert);
+
+    await InvoiceLogger.logEvent(
+      saved ? "info" : "warn",
+      "destination-content",
+      saved ? "document-saved" : "document-save-triggered-without-confirmation",
+      {
+        message: successAlert || ""
+      }
+    );
+
+    return {
+      saved,
+      message: successAlert || ""
+    };
+  }
+
+  function findDocumentSaveSuccessAlert() {
+    const alerts = Array.from(
+      document.querySelectorAll('.ant-alert-success .ant-alert-message, .ant-message-success')
+    );
+    const alert = alerts.find((node) => {
+      const text = normalizeText(node?.textContent || "");
+      return text.includes("DOKUMENT JE USPJESNO SPREMLJEN");
+    });
+
+    return alert?.textContent?.trim() || "";
+  }
+
+  async function waitForDocumentSaveSuccessAlert(timeoutMs = 6000) {
+    const started = Date.now();
+
+    while (Date.now() - started < timeoutMs) {
+      const message = findDocumentSaveSuccessAlert();
+      if (message) {
+        return message;
+      }
+      await sleep(200);
+    }
+
+    return "";
   }
 
   async function seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta) {
