@@ -1,5 +1,5 @@
 (function () {
-  const SOURCE_SCRIPT_VERSION = "2026-03-30-source-v8";
+  const SOURCE_SCRIPT_VERSION = "2026-04-01-source-v11";
   const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
 
   if (globalThis.__invoiceHelperSourceInitialized === SOURCE_SCRIPT_VERSION) {
@@ -204,7 +204,7 @@
       throw new Error("No data rows found in source report table.");
     }
 
-    const extractionMeta = extractMetaFromReport(extractedRows);
+    const extractionMeta = extractMetaFromReport(extractedRows, pendingExtraction);
     const restrictedCheck = await confirmRestrictedOrganizationAction(
       extractionMeta.organization || extractionMeta.organizationSearchName || "",
       "ekstrakciju izvjestaja",
@@ -307,13 +307,20 @@
   async function validateExtractedFinancialPeriod(extractionMeta) {
     const expectedFinancialPeriod = normalizeCellText(formatPreviousMonthRange());
     const actualFinancialPeriod = normalizeCellText(extractionMeta.financialPeriod || "");
+    const expectedPeriodRange = getExpectedBillingPeriodRange();
+    const actualPeriodRange = parseFinancialPeriod(extractionMeta.financialPeriod || "");
 
     if (!actualFinancialPeriod) {
       await InvoiceLogger.logEvent("warn", "source-content", "financial-period-missing-in-report", "");
       return;
     }
 
-    if (actualFinancialPeriod !== expectedFinancialPeriod) {
+    const matches =
+      actualPeriodRange != null
+        ? arePeriodRangesEqual(actualPeriodRange, expectedPeriodRange)
+        : actualFinancialPeriod === expectedFinancialPeriod;
+
+    if (!matches) {
       await InvoiceLogger.logEvent("error", "source-content", "financial-period-mismatch", {
         expectedFinancialPeriod,
         actualFinancialPeriod
@@ -425,8 +432,51 @@
     return matchingHeaderCells >= Math.min(3, comparableHeaders.length);
   }
 
-  function extractMetaFromReport(extractedRows = []) {
-    const filters = Array.from(document.querySelectorAll(".filterDisplay")).reduce(
+  function extractMetaFromReport(extractedRows = [], pendingExtraction = null) {
+    const filters = readReportFilters();
+    const organization = pickFirstNonEmpty(
+      getFilterValue(filters, ["Organizacija", "Organization unit", "Organization"]),
+      getCurrentOrganizationValue(),
+      pendingExtraction?.organizationName || ""
+    );
+    const financialPeriod = pickFirstNonEmpty(
+      getFilterValue(filters, ["Financijsko razdoblje", "Financial period"]),
+      getCurrentFinancialPeriodValue(),
+      pendingExtraction?.expectedFinancialPeriod || ""
+    );
+    const sourceTotalNet = calculateSourceTotalNet(extractedRows);
+
+    return {
+      extractedAt: new Date().toISOString(),
+      organization,
+      organizationSearchName: normalizeOrganizationName(organization),
+      financialPeriod,
+      sourceTotalNet,
+      sourceTotalNetDisplay: formatLocaleAmount(sourceTotalNet)
+    };
+  }
+
+  function calculateSourceTotalNet(extractedRows) {
+    return extractedRows.reduce((sum, row) => {
+      return (
+        sum +
+        parseLocaleNumber(
+          getRowFieldValue(row, [
+            "Potrosnja zatvorenika",
+            "Prisoners' spendings",
+            "Prisoners\u2019 spendings",
+            "Neto iznos stavke",
+            "Total spendings",
+            "Iznos",
+            "Ukupno"
+          ])
+        )
+      );
+    }, 0);
+  }
+
+  function readReportFilters() {
+    return Array.from(document.querySelectorAll(".filterDisplay, .filter-display")).reduce(
       (accumulator, filterNode) => {
         const label = normalizeCellText(
           filterNode.querySelector(".filterLabel")?.textContent || ""
@@ -442,29 +492,34 @@
       },
       {}
     );
-
-    const organization = filters["Organizacija"] || "";
-    const sourceTotalNet = calculateSourceTotalNet(extractedRows);
-
-    return {
-      extractedAt: new Date().toISOString(),
-      organization,
-      organizationSearchName: normalizeOrganizationName(organization),
-      financialPeriod: filters["Financijsko razdoblje"] || "",
-      sourceTotalNet,
-      sourceTotalNetDisplay: formatLocaleAmount(sourceTotalNet)
-    };
   }
 
-  function calculateSourceTotalNet(extractedRows) {
-    return extractedRows.reduce((sum, row) => {
-      return (
-        sum +
-        parseLocaleNumber(
-          getRowFieldValue(row, ["Potrosnja zatvorenika", "Neto iznos stavke", "Iznos", "Ukupno"])
-        )
-      );
-    }, 0);
+  function getFilterValue(filters, candidateLabels) {
+    return (
+      candidateLabels
+        .map((label) => filters[label])
+        .find((value) => value != null && String(value).trim()) || ""
+    );
+  }
+
+  function getCurrentOrganizationValue() {
+    const orgPresentationInput = document.querySelector(SOURCE_CONFIG.organizationPresentationInput);
+    return normalizeCellText(
+      orgPresentationInput?.value || orgPresentationInput?.getAttribute("title") || ""
+    );
+  }
+
+  function getCurrentFinancialPeriodValue() {
+    const periodSelect = document.querySelector(SOURCE_CONFIG.financialPeriodSelect);
+    if (periodSelect?.selectedIndex >= 0 && periodSelect.options?.length) {
+      return normalizeCellText(periodSelect.options[periodSelect.selectedIndex]?.textContent || "");
+    }
+
+    return normalizeCellText(periodSelect?.value || "");
+  }
+
+  function pickFirstNonEmpty(...values) {
+    return values.find((value) => value != null && String(value).trim()) || "";
   }
 
   function getRowFieldValue(row, candidateHeaders) {
@@ -486,12 +541,57 @@
   }
 
   function parseLocaleNumber(value) {
-    const normalized = String(value || "")
-      .replace(/\./g, "")
-      .replace(",", ".")
-      .replace(/[^\d.-]/g, "");
+    const normalized = normalizeNumericString(value);
 
     return Number.parseFloat(normalized) || 0;
+  }
+
+  function normalizeNumericString(value) {
+    let normalized = String(value || "")
+      .replace(/\s+/g, "")
+      .replace(/EUR/gi, "")
+      .replace(/[^\d,.-]/g, "");
+
+    if (!normalized) {
+      return "";
+    }
+
+    const lastCommaIndex = normalized.lastIndexOf(",");
+    const lastDotIndex = normalized.lastIndexOf(".");
+
+    if (lastCommaIndex !== -1 && lastDotIndex !== -1) {
+      if (lastCommaIndex > lastDotIndex) {
+        normalized = normalized.split(".").join("");
+        normalized = keepLastSeparatorAsDecimal(normalized, ",");
+      } else {
+        normalized = normalized.split(",").join("");
+        normalized = keepLastSeparatorAsDecimal(normalized, ".");
+      }
+    } else if (lastCommaIndex !== -1) {
+      normalized = keepLastSeparatorAsDecimal(normalized, ",");
+    } else if (lastDotIndex !== -1) {
+      normalized = keepLastSeparatorAsDecimal(normalized, ".");
+    }
+
+    return normalized.replace(/[^\d.-]/g, "");
+  }
+
+  function keepLastSeparatorAsDecimal(value, separator) {
+    const lastIndex = value.lastIndexOf(separator);
+    if (lastIndex === -1) {
+      return value;
+    }
+
+    const before = value
+      .slice(0, lastIndex)
+      .split(separator)
+      .join("");
+    const after = value
+      .slice(lastIndex + 1)
+      .split(separator)
+      .join("");
+
+    return `${before}.${after}`;
   }
 
   function formatLocaleAmount(value) {
@@ -500,14 +600,30 @@
 
   function findPreviousMonthOption(select) {
     const target = formatPreviousMonthRange();
-    return Array.from(select.options).find(
-      (option) => normalizeCellText(option.textContent) === normalizeCellText(target)
+    const expectedPeriodRange = getExpectedBillingPeriodRange();
+
+    return (
+      Array.from(select.options).find((option) => {
+        const optionRange = parseFinancialPeriod(option.textContent || "");
+        return optionRange && arePeriodRangesEqual(optionRange, expectedPeriodRange);
+      }) ||
+      Array.from(select.options).find(
+        (option) => normalizeCellText(option.textContent) === normalizeCellText(target)
+      )
     );
   }
 
   function formatPreviousMonthRange() {
-    const now = new Date();
-    const firstDayCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const { from, to } = getExpectedBillingPeriodRange();
+
+    return [
+      `${from.getDate()}.${from.getMonth() + 1}.${from.getFullYear()}.`,
+      `${to.getDate()}.${to.getMonth() + 1}.${to.getFullYear()}.`
+    ].join(" - ");
+  }
+
+  function getExpectedBillingPeriodRange(referenceDate = new Date()) {
+    const firstDayCurrentMonth = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
     const firstDayPreviousMonth = new Date(
       firstDayCurrentMonth.getFullYear(),
       firstDayCurrentMonth.getMonth() - 1,
@@ -519,10 +635,64 @@
       0
     );
 
-    return [
-      `${firstDayPreviousMonth.getDate()}.${firstDayPreviousMonth.getMonth() + 1}.${firstDayPreviousMonth.getFullYear()}.`,
-      `${lastDayPreviousMonth.getDate()}.${lastDayPreviousMonth.getMonth() + 1}.${lastDayPreviousMonth.getFullYear()}.`
-    ].join(" - ");
+    return {
+      from: firstDayPreviousMonth,
+      to: lastDayPreviousMonth
+    };
+  }
+
+  function parseFinancialPeriod(value) {
+    const tokens = String(value || "").match(/\d{1,2}\s*[./]\s*\d{1,2}\s*[./]\s*\d{4}\.?/g);
+    if (!tokens || tokens.length < 2) {
+      return null;
+    }
+
+    const [from, to] = tokens.map(parseFlexibleDateToken);
+    if (!from || !to) {
+      return null;
+    }
+
+    return { from, to };
+  }
+
+  function parseFlexibleDateToken(token) {
+    const normalized = String(token || "")
+      .replace(/\s+/g, "")
+      .trim();
+    const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(normalized);
+    if (slashMatch) {
+      return new Date(Number(slashMatch[3]), Number(slashMatch[1]) - 1, Number(slashMatch[2]));
+    }
+
+    const dotMatch = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.?$/.exec(normalized);
+    if (dotMatch) {
+      return new Date(Number(dotMatch[3]), Number(dotMatch[2]) - 1, Number(dotMatch[1]));
+    }
+
+    return null;
+  }
+
+  function arePeriodRangesEqual(left, right) {
+    if (!left?.from || !left?.to || !right?.from || !right?.to) {
+      return false;
+    }
+
+    return areSameDate(left.from, right.from) && areSameDate(left.to, right.to);
+  }
+
+  function areSameDate(left, right) {
+    if (!(left instanceof Date) || Number.isNaN(left.getTime())) {
+      return false;
+    }
+    if (!(right instanceof Date) || Number.isNaN(right.getTime())) {
+      return false;
+    }
+
+    return (
+      left.getFullYear() === right.getFullYear() &&
+      left.getMonth() === right.getMonth() &&
+      left.getDate() === right.getDate()
+    );
   }
 
   function normalizeOrganizationName(value) {

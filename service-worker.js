@@ -102,15 +102,20 @@ async function resumePendingSourceExtraction(tabId) {
 
 async function handlePopupAction(message) {
   const action = message?.action || "";
+  const origin = message?.origin || "";
   await InvoiceLogger.logEvent("info", "service-worker", "popup-action-received", { action });
 
   switch (action) {
     case "syncFloatingPanel":
       return syncFloatingPanelOnActiveTab();
     case "extract":
-      return sendActionToActiveTab("EXTRACT_DATA", ["logger.js", "source-content.js"]);
+      return sendActionToActiveTab("EXTRACT_DATA", ["logger.js", "source-content.js"], {
+        skipFloatingRefresh: origin === "floating-panel"
+      });
     case "fill":
-      return sendActionToActiveTab("FILL_DESTINATION_PAGE", ["logger.js", "destination-content.js"]);
+      return sendActionToActiveTab("FILL_DESTINATION_PAGE", ["logger.js", "destination-content.js"], {
+        skipFloatingRefresh: origin === "floating-panel"
+      });
     case "preview":
       return previewStoredData();
     case "getLogs":
@@ -142,7 +147,7 @@ async function handlePopupAction(message) {
   }
 }
 
-async function sendActionToActiveTab(type, filesToInject) {
+async function sendActionToActiveTab(type, filesToInject, options = {}) {
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true
@@ -152,7 +157,9 @@ async function sendActionToActiveTab(type, filesToInject) {
     throw new Error("No active tab found.");
   }
 
-  await refreshFloatingPanelInTab(tab.id).catch(() => {});
+  if (!options.skipFloatingRefresh) {
+    await refreshFloatingPanelInTab(tab.id).catch(() => {});
+  }
 
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },

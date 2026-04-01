@@ -1,11 +1,54 @@
 (function () {
-  const DESTINATION_SCRIPT_VERSION = "2026-03-30-destination-v12";
+  const DESTINATION_SCRIPT_VERSION = "2026-04-01-destination-v21";
   const RESTRICTED_ORGANIZATION_NAME = "Zatvor u Sisku (314)";
   const VISUAL_SCROLL_DELAY_MS = 550;
   const VISUAL_FIELD_DELAY_MS = 300;
   const TOTAL_OVERLAY_DURATION_MS = 8000;
   const TOTAL_MISMATCH_OVERLAY_DURATION_MS = 5000;
   const SAVE_DELAY_AFTER_TOTALS_MS = 5500;
+  const LINE_ITEM_NAME_ALIASES = {
+    "VIDEO CALL": "Videopoziv",
+    "MEDUNARODNI EU,EEA": "Međunarodni EU,EEA",
+    "MEÐUNARODNI EU,EEA": "Međunarodni EU,EEA",
+    "MEDUNARODNI EUROPA-1": "Međunarodni EUROPA-1",
+    "MEÐUNARODNI EUROPA-1": "Međunarodni EUROPA-1",
+    "MEDUNARODNI EUROPA-2": "Međunarodni EUROPA-2",
+    "MEÐUNARODNI EUROPA-2": "Međunarodni EUROPA-2",
+    "MEDUNARODNI SVIJET-1": "Međunarodni SVIJET-1",
+    "MEÐUNARODNI SVIJET-1": "Međunarodni SVIJET-1",
+    "MEDUNARODNI SVIJET-2": "Međunarodni SVIJET-2",
+    "MEÐUNARODNI SVIJET-2": "Međunarodni SVIJET-2"
+  };
+  const CANONICAL_LINE_ITEM_NAME_ALIASES = {
+    "VIDEO CALL": "VIDEOPOZIV",
+    "VIDEOPoziv": "VIDEOPOZIV",
+    "VIDEOPOZIV": "VIDEOPOZIV",
+    "MEDUNARODNI EU,EEA": "MEDUNARODNI EU,EEA",
+    "ME\u00D0UNARODNI EU,EEA": "MEDUNARODNI EU,EEA",
+    "ME\u0110UNARODNI EU,EEA": "MEDUNARODNI EU,EEA",
+    "MEDUNARODNI EUROPA-1": "MEDUNARODNI EUROPA-1",
+    "ME\u00D0UNARODNI EUROPA-1": "MEDUNARODNI EUROPA-1",
+    "ME\u0110UNARODNI EUROPA-1": "MEDUNARODNI EUROPA-1",
+    "MEDUNARODNI EUROPA-2": "MEDUNARODNI EUROPA-2",
+    "ME\u00D0UNARODNI EUROPA-2": "MEDUNARODNI EUROPA-2",
+    "ME\u0110UNARODNI EUROPA-2": "MEDUNARODNI EUROPA-2",
+    "MEDUNARODNI SVIJET-1": "MEDUNARODNI SVIJET-1",
+    "ME\u00D0UNARODNI SVIJET-1": "MEDUNARODNI SVIJET-1",
+    "ME\u0110UNARODNI SVIJET-1": "MEDUNARODNI SVIJET-1",
+    "MEDUNARODNI SVIJET-2": "MEDUNARODNI SVIJET-2",
+    "ME\u00D0UNARODNI SVIJET-2": "MEDUNARODNI SVIJET-2",
+    "ME\u0110UNARODNI SVIJET-2": "MEDUNARODNI SVIJET-2"
+  };
+  const ORGANIZATION_IDENTITIES = [
+    {
+      sourceAliases: ["Zatvor u Zagrebu (300)", "Zatvor u Zagrebu"],
+      finaCustomerName:
+        "MINISTARSTVO PRAVOSUĐA I UPRAVE UPRAVA ZA ZATVORSKI SUSTAV I PROBACIJU ZATVOR U ZAGREBU",
+      buyerTaxId: "92668153620",
+      buyerEndpointId: "92668153620",
+      buyerStreetName: "DR. LUJE NALETILIĆA 1"
+    }
+  ];
 
   if (globalThis.__invoiceHelperDestinationInitialized === DESTINATION_SCRIPT_VERSION) {
     return;
@@ -40,6 +83,9 @@
     editableDocumentSelectors: {
       invoiceNumber: "#formaPodaciDokument_iD",
       buyerRegistrationName: "#formaSudioniciKupacHr_registrationName",
+      buyerTaxId: "#formaSudioniciKupacHr_taxSchemeCompanyID",
+      buyerEndpointId: "#formaSudioniciKupacHr_endpointID",
+      buyerStreetName: "#formaSudioniciKupacHr_address_streetName",
       dueDate: "#formaPodaciDokument_dueDate input",
       issueDate: "#formaPodaciDokument_issueDate input",
       issueTime: "#formaPodaciDokument_issueTime input",
@@ -50,6 +96,9 @@
     },
     editableDocumentLabels: {
       buyerRegistrationName: ["Naziv", "Pretrazi kupca"],
+      buyerTaxId: ["OIB ili porezni broj"],
+      buyerEndpointId: ["Elektronicka adresa"],
+      buyerStreetName: ["Ulica i kucni broj"],
       dueDate: ["Datum dospijeca placanja"],
       issueDate: ["Datum izdavanja"],
       issueTime: ["Vrijeme izdavanja"],
@@ -138,34 +187,34 @@
   }
 
   async function findAndOpenMatchingDocument(extractionMeta) {
-    const targetName = normalizeText(extractionMeta.organizationSearchName || "");
-    if (!targetName) {
+    const targetIdentity = resolveOrganizationIdentity(extractionMeta);
+    if (!targetIdentity.matchCandidates.length) {
       throw new Error("Organization name metadata is missing.");
     }
 
     InvoiceLogger.showStatusOverlay("Searching matching document", "info");
     await InvoiceLogger.logEvent("info", "destination-content", "destination-search-started", {
-      targetName
+      targetIdentity
     });
 
-    const matchingRow = await findMatchingRowAcrossPages(targetName);
+    const matchingRow = await findMatchingRowAcrossPages(targetIdentity);
     if (!matchingRow) {
       await InvoiceLogger.logEvent("warn", "destination-content", "matching-document-not-found", {
-        targetName
+        targetIdentity
       });
       InvoiceLogger.showStatusOverlay("Destination document missing", "warn");
-      throw new Error(`Document row not found for "${targetName}".`);
+      throw new Error(`Document row not found for "${targetIdentity.displayName}".`);
     }
 
     emphasizeElement(matchingRow, "rgba(21, 94, 239, 0.22)");
     matchingRow.click();
     await InvoiceLogger.logEvent("info", "destination-content", "matching-document-opened", {
-      targetName,
+      targetIdentity,
       rowSummary: summarizeSearchRow(matchingRow)
     });
     InvoiceLogger.showStatusOverlay("Matching document opened", "success");
 
-    return { message: `Matching document opened for ${targetName}.` };
+    return { message: `Matching document opened for ${targetIdentity.displayName}.` };
   }
 
   async function fillCurrentForm(extractedRows, extractionMeta) {
@@ -183,6 +232,7 @@
       const pendingInvoiceNumber = await applyPendingInvoiceNumber();
       const fieldResults = await seedKnownDocumentFields(pendingInvoiceNumber, extractionMeta);
       const lineItemResults = await applyLineItemRules(extractedRows);
+      await ensureNoPendingLineItemEditor("after-line-item-rules");
       const lineItemMatch = await findMatchingLineItem(extractedRows);
       const totalDifferenceResult = await compareSourceAndDestinationTotals(extractionMeta);
       await sleep(SAVE_DELAY_AFTER_TOTALS_MS);
@@ -308,7 +358,7 @@
     });
   }
 
-  async function findMatchingRowAcrossPages(targetName) {
+  async function findMatchingRowAcrossPages(targetIdentity) {
     let pageGuard = 0;
 
     while (pageGuard < 10) {
@@ -319,15 +369,24 @@
           const cells = row.querySelectorAll("td");
           const customerCell = cells[DESTINATION_CONFIG.resultsCustomerCellIndex];
           const customerName = normalizeText(customerCell?.textContent || "");
-          return customerName.includes(targetName);
+          return targetIdentity.matchCandidates.some(
+            (candidate) => customerName.includes(candidate) || candidate.includes(customerName)
+          );
         })
-        .sort((left, right) => getRowNumericId(right) - getRowNumericId(left));
+        .sort((left, right) => {
+          const rightScore = scoreSearchRow(right, targetIdentity);
+          const leftScore = scoreSearchRow(left, targetIdentity);
+          if (rightScore !== leftScore) {
+            return rightScore - leftScore;
+          }
+          return getRowNumericId(right) - getRowNumericId(left);
+        });
 
       const matchingRow = matchingRows[0] || null;
 
       if (matchingRow) {
         await InvoiceLogger.logEvent("info", "destination-content", "matching-document-found", {
-          targetName,
+          targetIdentity,
           rowSummary: summarizeSearchRow(matchingRow)
         });
         return matchingRow;
@@ -452,6 +511,19 @@
   }
 
   async function saveCurrentDocument() {
+    const activeInlineEditor = findActiveInlineEditorRow();
+    const modalEditor = document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot);
+    if (activeInlineEditor || modalEditor) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "save-document-blocked-editor-open", {
+        activeInlineEditor: Boolean(activeInlineEditor),
+        modalEditor: Boolean(modalEditor)
+      });
+      InvoiceLogger.showStatusOverlay("Save current line item first", "warn");
+      return {
+        type: "line-item-editor-still-open"
+      };
+    }
+
     const saveButton = findSaveDocumentButton();
     if (!saveButton || saveButton.disabled) {
       await InvoiceLogger.logEvent("warn", "destination-content", "save-document-button-missing", "");
@@ -531,7 +603,12 @@
     const now = new Date();
     const dueDate = new Date(now.getFullYear(), now.getMonth(), 17);
     const shortReference = buildShortReference(pendingInvoiceNumber);
-    const invoicePeriod = parseFinancialPeriod(extractionMeta?.financialPeriod || "");
+    const existingInvoicePeriod = getCurrentInvoicePeriodRange(
+      selectors.invoicePeriodInputs,
+      labels.invoicePeriod
+    );
+    const extractedInvoicePeriod = parseFinancialPeriod(extractionMeta?.financialPeriod || "");
+    const invoicePeriod = existingInvoicePeriod || extractedInvoicePeriod;
 
     updates.push(
       await setField(selectors.issueDate, formatCroatianDate(now, true), "issue-date", labels.issueDate)
@@ -575,10 +652,8 @@
   }
 
   async function ensureEditableDocumentMatchesTarget(extractionMeta) {
-    const expectedCustomerRaw =
-      extractionMeta?.organizationSearchName ||
-      extractionMeta?.organization ||
-      "";
+    const targetIdentity = resolveOrganizationIdentity(extractionMeta);
+    const expectedCustomerRaw = targetIdentity.expectedCustomerRaw;
     const expectedCustomer = normalizeText(expectedCustomerRaw);
 
     if (!expectedCustomer) {
@@ -591,8 +666,26 @@
       DESTINATION_CONFIG.editableDocumentLabels.buyerRegistrationName,
       2000
     );
+    const taxIdField = await waitForEditableField(
+      DESTINATION_CONFIG.editableDocumentSelectors.buyerTaxId,
+      DESTINATION_CONFIG.editableDocumentLabels.buyerTaxId,
+      800
+    );
+    const endpointIdField = await waitForEditableField(
+      DESTINATION_CONFIG.editableDocumentSelectors.buyerEndpointId,
+      DESTINATION_CONFIG.editableDocumentLabels.buyerEndpointId,
+      800
+    );
+    const streetField = await waitForEditableField(
+      DESTINATION_CONFIG.editableDocumentSelectors.buyerStreetName,
+      DESTINATION_CONFIG.editableDocumentLabels.buyerStreetName,
+      800
+    );
     const currentCustomerRaw = customerField?.value || customerField?.textContent || "";
     const currentCustomer = normalizeText(currentCustomerRaw);
+    const currentTaxIdRaw = taxIdField?.value || taxIdField?.textContent || "";
+    const currentEndpointIdRaw = endpointIdField?.value || endpointIdField?.textContent || "";
+    const currentStreetRaw = streetField?.value || streetField?.textContent || "";
 
     if (customerField) {
       await revealElement(customerField, "Kupac");
@@ -605,15 +698,32 @@
       throw new Error("Ne mogu potvrditi kupca na otvorenom FINA dokumentu.");
     }
 
-    const matches =
-      currentCustomer.includes(expectedCustomer) || expectedCustomer.includes(currentCustomer);
+    const customerMatches = targetIdentity.matchCandidates.some(
+      (candidate) => currentCustomer.includes(candidate) || candidate.includes(currentCustomer)
+    );
+    const taxIdMatches = !targetIdentity.buyerTaxId || normalizeIdentifier(currentTaxIdRaw) === targetIdentity.buyerTaxId;
+    const endpointMatches =
+      !targetIdentity.buyerEndpointId ||
+      normalizeIdentifier(currentEndpointIdRaw) === targetIdentity.buyerEndpointId;
+    const streetMatches =
+      !targetIdentity.buyerStreetName ||
+      normalizeText(currentStreetRaw).includes(normalizeText(targetIdentity.buyerStreetName));
+    const matches = customerMatches && taxIdMatches && endpointMatches && streetMatches;
 
     if (!matches) {
-      const message = `Pogresan otvoreni racun. Ocekivani kupac: ${expectedCustomerRaw}. Trenutno otvoren: ${currentCustomerRaw}.`;
+      const message =
+        `Pogresan otvoreni racun. Ocekivani kupac: ${expectedCustomerRaw}. ` +
+        `Ocekivani OIB: ${targetIdentity.buyerTaxId || "-"}. ` +
+        `Trenutno otvoren: ${currentCustomerRaw}. ` +
+        `Trenutni OIB: ${normalizeIdentifier(currentTaxIdRaw) || "-"}.`;
       InvoiceLogger.showStatusOverlay(message, "warn", 7000, { position: "center" });
       await InvoiceLogger.logEvent("warn", "destination-content", "destination-customer-mismatch", {
         expectedCustomerRaw,
-        currentCustomerRaw
+        currentCustomerRaw,
+        currentTaxIdRaw,
+        currentEndpointIdRaw,
+        currentStreetRaw,
+        targetIdentity
       });
       throw new Error(message);
     }
@@ -625,7 +735,10 @@
 
     return {
       expectedCustomer: expectedCustomerRaw,
-      currentCustomer: currentCustomerRaw
+      currentCustomer: currentCustomerRaw,
+      expectedTaxId: targetIdentity.buyerTaxId || "",
+      currentTaxId: normalizeIdentifier(currentTaxIdRaw),
+      currentEndpointId: normalizeIdentifier(currentEndpointIdRaw)
     };
   }
 
@@ -833,6 +946,21 @@
     };
   }
 
+  function getCurrentInvoicePeriodRange(selector, labelCandidates = []) {
+    const inputs = findInvoicePeriodInputs(selector, labelCandidates);
+    if (inputs.length < 2) {
+      return null;
+    }
+
+    const from = parseFlexibleDateToken(inputs[0]?.value || inputs[0]?.textContent || "");
+    const to = parseFlexibleDateToken(inputs[1]?.value || inputs[1]?.textContent || "");
+    if (!from || !to) {
+      return null;
+    }
+
+    return { from, to };
+  }
+
   async function findMatchingLineItem(extractedRows) {
     const sourceRow = extractedRows.find((row) => getSourceLineItemName(row));
     if (!sourceRow) {
@@ -840,9 +968,12 @@
       return null;
     }
 
-    const sourceName = normalizeText(getSourceLineItemName(sourceRow));
+    const sourceName = normalizeLineItemName(getSourceLineItemName(sourceRow));
     const matchingRow = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).find(
-      (row) => normalizeText(row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "") === sourceName
+      (row) =>
+        normalizeLineItemName(
+          row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || ""
+        ) === sourceName
     );
 
     if (!matchingRow) {
@@ -888,7 +1019,12 @@
 
       const matchingSourceRows = sourceRowsByName.get(normalizedDestinationName) || [];
       if (matchingSourceRows.length > 0) {
-        const updateResult = await updateDestinationLineItem(row, destinationName, matchingSourceRows.shift());
+        const updateResult = await updateDestinationLineItem(
+          row,
+          descriptor,
+          destinationName,
+          matchingSourceRows.shift()
+        );
         results.push(updateResult);
         continue;
       }
@@ -902,7 +1038,7 @@
         continue;
       }
 
-      const zeroResult = await zeroOutDestinationLineItem(row, destinationName, quantity);
+      const zeroResult = await zeroOutDestinationLineItem(row, descriptor, destinationName, quantity);
       results.push(zeroResult);
     }
 
@@ -914,7 +1050,7 @@
     const groups = new Map();
 
     for (const row of extractedRows) {
-      const name = normalizeText(getSourceLineItemName(row));
+      const name = normalizeLineItemName(getSourceLineItemName(row));
       if (!name) {
         continue;
       }
@@ -936,7 +1072,7 @@
       .map((row) => {
         const destinationName =
           row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent?.trim() || "";
-        const normalizedDestinationName = normalizeText(destinationName);
+        const normalizedDestinationName = normalizeLineItemName(destinationName);
         const occurrence = occurrenceMap.get(normalizedDestinationName) || 0;
         occurrenceMap.set(normalizedDestinationName, occurrence + 1);
 
@@ -949,10 +1085,10 @@
       .filter((descriptor) => descriptor.normalizedDestinationName);
   }
 
-  async function zeroOutDestinationLineItem(row, destinationName, previousQuantity) {
+  async function zeroOutDestinationLineItem(row, descriptor, destinationName, previousQuantity) {
     await revealElement(row, `Stavka ${destinationName}`);
     emphasizeElement(row, "rgba(217, 119, 6, 0.24)");
-    const editContext = await openLineItemEditor(row, destinationName);
+    const editContext = await openLineItemEditor(row, descriptor, destinationName);
     if (!editContext.ok) {
       return editContext.result;
     }
@@ -961,20 +1097,8 @@
     if (quantityUpdated) {
       await sleep(VISUAL_FIELD_DELAY_MS);
     }
-    const unitPriceUpdated = setEditorFieldValue(
-      editContext,
-      ["Jedinicna cijena artikla", "Neto cijena artikla"],
-      "0"
-    );
-    if (unitPriceUpdated) {
-      await sleep(VISUAL_FIELD_DELAY_MS);
-    }
-    const netAmountUpdated = setEditorFieldValue(editContext, ["Neto iznos stavke"], "0");
-    if (netAmountUpdated) {
-      await sleep(VISUAL_FIELD_DELAY_MS);
-    }
 
-    if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
+    if (!quantityUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-zero-fields-missing", {
         destinationName
       });
@@ -985,7 +1109,18 @@
       };
     }
 
-    await saveLineItemEditor(editContext);
+    const editorClosed = await saveLineItemEditor(editContext);
+    if (!editorClosed) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-not-confirmed", {
+        destinationName,
+        action: "zero"
+      });
+      return {
+        type: "save-not-confirmed",
+        destinationName,
+        previousQuantity
+      };
+    }
 
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-zeroed", {
       destinationName,
@@ -999,31 +1134,51 @@
     };
   }
 
-  async function updateDestinationLineItem(row, destinationName, sourceRow) {
-    const sourceQuantityRaw = getSourceFieldValue(sourceRow, ["Naplacene jedinice"]);
-    const sourceUnitPriceRaw = getSourceFieldValue(sourceRow, ["Ocijenite"]);
-    const sourceNetAmountRaw = getSourceFieldValue(sourceRow, ["Potrosnja zatvorenika"]);
+  async function updateDestinationLineItem(row, descriptor, destinationName, sourceRow) {
+    const sourceQuantityRaw = getSourceFieldValue(sourceRow, ["Naplacene jedinice", "Charged units"]);
+    const sourceUnitPriceRaw = getSourceFieldValue(sourceRow, ["Ocijenite", "Rate"]);
     const sourceQuantity = parseLocaleNumber(sourceQuantityRaw);
     const sourceUnitPrice = parseLocaleNumber(sourceUnitPriceRaw);
-    const sourceNetAmount = parseLocaleNumber(sourceNetAmountRaw);
     const currentQuantity = getDestinationQuantity(row);
-    const currentNetAmount = getDestinationNetAmount(row);
+    const currentUnitPrice = getDestinationUnitPrice(row);
 
-    if (
-      areNumbersClose(currentQuantity, sourceQuantity) &&
-      areNumbersClose(currentNetAmount, sourceNetAmount)
-    ) {
+    if (!sourceQuantityRaw) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-missing-source-quantity", {
+        destinationName
+      });
+      return {
+        type: "missing-source-quantity",
+        destinationName
+      };
+    }
+
+    if (!sourceUnitPriceRaw || !areNumbersClose(currentUnitPrice, sourceUnitPrice)) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-rate-mismatch", {
+        destinationName,
+        currentUnitPrice,
+        sourceUnitPrice,
+        sourceUnitPriceRaw
+      });
+      return {
+        type: "rate-mismatch",
+        destinationName,
+        currentUnitPrice,
+        sourceUnitPrice
+      };
+    }
+
+    if (areNumbersClose(currentQuantity, sourceQuantity)) {
       return {
         type: "already-synced",
         destinationName,
         quantity: sourceQuantity,
-        netAmount: sourceNetAmount
+        unitPrice: sourceUnitPrice
       };
     }
 
     await revealElement(row, `Stavka ${destinationName}`);
     emphasizeElement(row, "rgba(21, 94, 239, 0.22)");
-    const editContext = await openLineItemEditor(row, destinationName);
+    const editContext = await openLineItemEditor(row, descriptor, destinationName);
     if (!editContext.ok) {
       return editContext.result;
     }
@@ -1034,57 +1189,46 @@
     if (quantityUpdated) {
       await sleep(VISUAL_FIELD_DELAY_MS);
     }
-    const unitPriceUpdated = sourceUnitPriceRaw
-      ? setEditorFieldValue(
-          editContext,
-          ["Jedinicna cijena artikla", "Neto cijena artikla"],
-          normalizeNumericInput(sourceUnitPriceRaw)
-        )
-      : false;
-    if (unitPriceUpdated) {
-      await sleep(VISUAL_FIELD_DELAY_MS);
-    }
-    const netAmountUpdated = sourceNetAmountRaw
-      ? setEditorFieldValue(
-          editContext,
-          ["Neto iznos stavke"],
-          normalizeNumericInput(sourceNetAmountRaw)
-        )
-      : false;
-    if (netAmountUpdated) {
-      await sleep(VISUAL_FIELD_DELAY_MS);
-    }
 
-    if (!quantityUpdated && !unitPriceUpdated && !netAmountUpdated) {
+    if (!quantityUpdated) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-update-fields-missing", {
         destinationName,
         sourceQuantityRaw,
-        sourceUnitPriceRaw,
-        sourceNetAmountRaw
+        sourceUnitPriceRaw
       });
       return {
         type: "update-fields-missing",
         destinationName,
         quantity: sourceQuantity,
-        unitPrice: sourceUnitPrice,
-        netAmount: sourceNetAmount
+        unitPrice: sourceUnitPrice
       };
     }
 
-    await saveLineItemEditor(editContext);
+    const editorClosed = await saveLineItemEditor(editContext);
+    if (!editorClosed) {
+      await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-not-confirmed", {
+        destinationName,
+        action: "update-quantity"
+      });
+      return {
+        type: "save-not-confirmed",
+        destinationName,
+        quantity: sourceQuantity,
+        unitPrice: sourceUnitPrice
+      };
+    }
+
     await InvoiceLogger.logEvent("info", "destination-content", "line-item-updated", {
       destinationName,
       quantity: sourceQuantity,
-      unitPrice: sourceUnitPrice,
-      netAmount: sourceNetAmount
+      unitPrice: sourceUnitPrice
     });
 
     return {
       type: "updated",
       destinationName,
       quantity: sourceQuantity,
-      unitPrice: sourceUnitPrice,
-      netAmount: sourceNetAmount
+      unitPrice: sourceUnitPrice
     };
   }
 
@@ -1093,10 +1237,18 @@
     return editIcon?.closest("button") || null;
   }
 
-  async function waitForLineItemEditor(timeoutMs = 3000) {
+  async function waitForLineItemEditor(_targetDescriptor = null, timeoutMs = 3000) {
     const started = Date.now();
 
     while (Date.now() - started < timeoutMs) {
+      const inlineRow = findActiveInlineEditorRow();
+      if (inlineRow) {
+        return {
+          mode: "inline",
+          editorRoot: inlineRow
+        };
+      }
+
       const editorRoot = document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot);
       if (editorRoot) {
         return {
@@ -1105,21 +1257,14 @@
         };
       }
 
-      const inlineRow = findActiveInlineEditorRow();
-      if (inlineRow) {
-        return {
-          mode: "inline",
-          editorRoot: inlineRow
-        };
-      }
       await sleep(150);
     }
 
     return null;
   }
 
-  async function openLineItemEditor(row, destinationName) {
-    if (isInlineEditableRow(row)) {
+  async function openLineItemEditor(row, descriptor, destinationName) {
+    if (isInlineEditorOpenForRow(row)) {
       const saveButton = findInlineSaveButton(row);
       if (!saveButton) {
         await InvoiceLogger.logEvent("warn", "destination-content", "line-item-save-missing", {
@@ -1140,6 +1285,7 @@
         ok: true,
         mode: "inline",
         editorRoot: row,
+        descriptor,
         saveButton
       };
     }
@@ -1162,7 +1308,7 @@
     editButton.click();
     await sleep(300);
 
-    const editorState = await waitForLineItemEditor();
+    const editorState = await waitForLineItemEditor(descriptor);
     if (!editorState?.editorRoot) {
       await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-missing", {
         destinationName
@@ -1198,6 +1344,7 @@
       ok: true,
       mode: editorState.mode,
       editorRoot: editorState.editorRoot,
+      descriptor,
       saveButton
     };
   }
@@ -1206,8 +1353,9 @@
     await revealElement(editContext.saveButton, "Spremi stavku");
     emphasizeElement(editContext.saveButton, "rgba(34, 197, 94, 0.24)");
     editContext.saveButton.click();
-    await waitForEditorToClose(editContext, editContext.mode === "inline" ? 1200 : 4000);
+    const editorClosed = await waitForEditorToClose(editContext, editContext.mode === "inline" ? 2200 : 4000);
     await sleep(editContext.mode === "inline" ? 120 : 250);
+    return editorClosed;
   }
 
   async function waitForEditorToClose(editContext, timeoutMs = 4000) {
@@ -1215,10 +1363,7 @@
 
     while (Date.now() - started < timeoutMs) {
       if (editContext.mode === "inline") {
-        if (
-          !isInlineEditableRow(editContext.editorRoot) ||
-          !findInlineSaveButton(editContext.editorRoot)
-        ) {
+        if (!findActiveInlineEditorRow()) {
           return true;
         }
       } else if (!document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot)) {
@@ -1307,18 +1452,18 @@
     return false;
   }
 
-  function isInlineEditableRow(row) {
+  function isInlineEditorOpenForRow(row) {
     if (!row) {
       return false;
     }
 
-    return Boolean(row.querySelector(DESTINATION_CONFIG.lineItems.inlineEditableSelector));
+    return Boolean(findInlineSaveButton(row));
   }
 
   function findActiveInlineEditorRow() {
     return (
       Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).find((row) =>
-        isInlineEditableRow(row)
+        isInlineEditorOpenForRow(row)
       ) || null
     );
   }
@@ -1343,6 +1488,11 @@
     return parseLocaleNumber(cells[3]?.textContent || "");
   }
 
+  function getDestinationUnitPrice(row) {
+    const cells = row.querySelectorAll("td");
+    return parseLocaleNumber(cells[5]?.textContent || "");
+  }
+
   function getDestinationNetAmount(row) {
     const cells = row.querySelectorAll("td");
     return parseLocaleNumber(cells[8]?.textContent || "");
@@ -1351,7 +1501,7 @@
   function findDestinationRowByNormalizedName(normalizedDestinationName) {
     return Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).find((row) => {
       const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "";
-      return normalizeText(destinationName) === normalizedDestinationName;
+      return normalizeLineItemName(destinationName) === normalizedDestinationName;
     }) || null;
   }
 
@@ -1359,16 +1509,33 @@
     const matchingRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).filter(
       (row) => {
         const destinationName = row.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "";
-        return normalizeText(destinationName) === descriptor.normalizedDestinationName;
+        return normalizeLineItemName(destinationName) === descriptor.normalizedDestinationName;
       }
     );
 
     return matchingRows[descriptor.occurrence] || null;
   }
 
+  function doesDestinationRowMatchDescriptor(row, descriptor) {
+    if (!row || !descriptor) {
+      return false;
+    }
+
+    const matchingRows = Array.from(document.querySelectorAll(DESTINATION_CONFIG.lineItems.rows)).filter(
+      (candidate) => {
+        const destinationName = candidate.querySelector(DESTINATION_CONFIG.lineItems.nameCell)?.textContent || "";
+        return normalizeLineItemName(destinationName) === descriptor.normalizedDestinationName;
+      }
+    );
+
+    return matchingRows[descriptor.occurrence] === row;
+  }
+
   function getSourceLineItemName(row) {
     const candidateHeaders = [
       "Ime/Destinacija tarife",
+      "Tariff name/destinations",
+      "Tariff name / destinations",
       "Naziv artikla",
       "Naziv",
       "Opis",
@@ -1497,12 +1664,12 @@
   }
 
   function parseFinancialPeriod(value) {
-    const matches = String(value || "").match(/(\d{1,2})\.(\d{1,2})\.(\d{4})\./g);
-    if (!matches || matches.length < 2) {
+    const tokens = String(value || "").match(/\d{1,2}\s*[./]\s*\d{1,2}\s*[./]\s*\d{4}\.?/g);
+    if (!tokens || tokens.length < 2) {
       return null;
     }
 
-    const [from, to] = matches.map(parseCroatianDateToken);
+    const [from, to] = tokens.map(parseFlexibleDateToken);
     if (!from || !to) {
       return null;
     }
@@ -1510,8 +1677,20 @@
     return { from, to };
   }
 
+  function parseFlexibleDateToken(token) {
+    const normalized = String(token || "")
+      .replace(/\s+/g, "")
+      .trim();
+    const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(normalized);
+    if (slashMatch) {
+      return new Date(Number(slashMatch[3]), Number(slashMatch[1]) - 1, Number(slashMatch[2]));
+    }
+
+    return parseCroatianDateToken(normalized);
+  }
+
   function parseCroatianDateToken(token) {
-    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.$/.exec(String(token || "").trim());
+    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.?$/.exec(String(token || "").trim());
     if (!match) {
       return null;
     }
@@ -1523,7 +1702,7 @@
     const normalized = String(value || "")
       .replace(/\s+/g, "")
       .trim();
-    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.$/.exec(normalized);
+    const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\.?$/.exec(normalized);
     if (!match) {
       return null;
     }
@@ -1568,6 +1747,74 @@
     );
   }
 
+  function resolveOrganizationIdentity(extractionMeta = {}) {
+    const sourceValues = [
+      extractionMeta?.organization || "",
+      extractionMeta?.organizationSearchName || ""
+    ].filter(Boolean);
+
+    const matchedIdentity = ORGANIZATION_IDENTITIES.find((identity) =>
+      identity.sourceAliases.some((alias) =>
+        sourceValues.some(
+          (value) => canonicalizeOrganizationValue(value) === canonicalizeOrganizationValue(alias)
+        )
+      )
+    );
+
+    const expectedCustomerRaw =
+      matchedIdentity?.finaCustomerName ||
+      extractionMeta?.organizationSearchName ||
+      extractionMeta?.organization ||
+      "";
+
+    const matchCandidates = [
+      matchedIdentity?.finaCustomerName,
+      extractionMeta?.organizationSearchName,
+      extractionMeta?.organization
+    ]
+      .filter(Boolean)
+      .map((value) => normalizeText(value))
+      .filter(Boolean);
+
+    return {
+      displayName: extractionMeta?.organization || extractionMeta?.organizationSearchName || "",
+      expectedCustomerRaw,
+      buyerTaxId: matchedIdentity?.buyerTaxId || "",
+      buyerEndpointId: matchedIdentity?.buyerEndpointId || "",
+      buyerStreetName: matchedIdentity?.buyerStreetName || "",
+      matchCandidates: Array.from(new Set(matchCandidates))
+    };
+  }
+
+  function scoreSearchRow(row, targetIdentity) {
+    const cells = row.querySelectorAll("td");
+    const customerText = normalizeText(
+      cells[DESTINATION_CONFIG.resultsCustomerCellIndex]?.textContent || ""
+    );
+
+    let score = 0;
+    for (const candidate of targetIdentity.matchCandidates || []) {
+      if (!candidate) {
+        continue;
+      }
+
+      if (customerText === candidate) {
+        score += 100;
+      } else if (customerText.includes(candidate) || candidate.includes(customerText)) {
+        score += 40;
+      }
+    }
+
+    if (targetIdentity.buyerTaxId) {
+      const rowText = normalizeIdentifier(row.textContent || "");
+      if (rowText.includes(targetIdentity.buyerTaxId)) {
+        score += 80;
+      }
+    }
+
+    return score;
+  }
+
   function canonicalizeOrganizationValue(value) {
     return String(value || "")
       .replace(/\u00a0/g, " ")
@@ -1589,24 +1836,98 @@
       .toUpperCase();
   }
 
-  function normalizeNumericInput(value) {
+  function normalizeIdentifier(value) {
     return String(value || "")
-      .replace(/\s+/g, "")
-      .replace(/EUR/gi, "")
-      .trim();
+      .toUpperCase()
+      .replace(/^HR/, "")
+      .replace(/[^\dA-Z]/g, "");
+  }
+
+  function normalizeLineItemName(value) {
+    const normalized = normalizeText(value);
+    const aliased =
+      CANONICAL_LINE_ITEM_NAME_ALIASES[normalized] ||
+      LINE_ITEM_NAME_ALIASES[normalized] ||
+      normalized;
+    return normalizeText(aliased);
+  }
+
+  function normalizeNumericInput(value) {
+    return normalizeNumericString(value).replace(".", ",");
   }
 
   function parseLocaleNumber(value) {
-    const normalized = String(value || "")
-      .replace(/\./g, "")
-      .replace(",", ".")
-      .replace(/[^\d.-]/g, "");
+    const normalized = normalizeNumericString(value);
 
     return Number.parseFloat(normalized) || 0;
   }
 
+  function normalizeNumericString(value) {
+    let normalized = String(value || "")
+      .replace(/\s+/g, "")
+      .replace(/EUR/gi, "")
+      .replace(/[^\d,.-]/g, "");
+
+    if (!normalized) {
+      return "";
+    }
+
+    const lastCommaIndex = normalized.lastIndexOf(",");
+    const lastDotIndex = normalized.lastIndexOf(".");
+
+    if (lastCommaIndex !== -1 && lastDotIndex !== -1) {
+      if (lastCommaIndex > lastDotIndex) {
+        normalized = normalized.split(".").join("");
+        normalized = keepLastSeparatorAsDecimal(normalized, ",");
+      } else {
+        normalized = normalized.split(",").join("");
+        normalized = keepLastSeparatorAsDecimal(normalized, ".");
+      }
+    } else if (lastCommaIndex !== -1) {
+      normalized = keepLastSeparatorAsDecimal(normalized, ",");
+    } else if (lastDotIndex !== -1) {
+      normalized = keepLastSeparatorAsDecimal(normalized, ".");
+    }
+
+    return normalized.replace(/[^\d.-]/g, "");
+  }
+
+  function keepLastSeparatorAsDecimal(value, separator) {
+    const lastIndex = value.lastIndexOf(separator);
+    if (lastIndex === -1) {
+      return value;
+    }
+
+    const before = value
+      .slice(0, lastIndex)
+      .split(separator)
+      .join("");
+    const after = value
+      .slice(lastIndex + 1)
+      .split(separator)
+      .join("");
+
+    return `${before}.${after}`;
+  }
+
   function roundCurrency(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
+  }
+
+  async function ensureNoPendingLineItemEditor(stage) {
+    const activeInlineEditor = findActiveInlineEditorRow();
+    const modalEditor = document.querySelector(DESTINATION_CONFIG.lineItems.modalRoot);
+    if (!activeInlineEditor && !modalEditor) {
+      return;
+    }
+
+    await InvoiceLogger.logEvent("warn", "destination-content", "line-item-editor-still-open", {
+      stage,
+      activeInlineEditor: Boolean(activeInlineEditor),
+      modalEditor: Boolean(modalEditor)
+    });
+    InvoiceLogger.showStatusOverlay("Save current line item first", "warn");
+    throw new Error("Line item editor is still open.");
   }
 
   function formatLocaleAmount(value) {

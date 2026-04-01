@@ -1,5 +1,5 @@
 (function () {
-  const PANEL_VERSION = "2026-03-31-floating-panel-v6";
+  const PANEL_VERSION = "2026-04-01-floating-panel-v7";
   const PANEL_ID = "__invoice_helper_floating_panel";
   const LAUNCHER_ID = "__invoice_helper_floating_launcher";
   const SOURCE_ORGANIZATION_KEY = "sourceOrganizationName";
@@ -419,6 +419,7 @@
       response = await chrome.runtime.sendMessage({
         type: "POPUP_ACTION",
         action,
+        origin: "floating-panel",
         ...extra
       });
     } catch (error) {
